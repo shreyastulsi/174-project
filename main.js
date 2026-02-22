@@ -21,10 +21,10 @@ const dir = new THREE.DirectionalLight(0xffffff, 0.95);
 dir.position.set(30, 40, 20);
 dir.castShadow = true;
 dir.shadow.mapSize.set(2048, 2048);
-dir.shadow.camera.left = -160;
-dir.shadow.camera.right = 160;
-dir.shadow.camera.top = 160;
-dir.shadow.camera.bottom = -160;
+dir.shadow.camera.left = -25;
+dir.shadow.camera.right = 25;
+dir.shadow.camera.top = 25;
+dir.shadow.camera.bottom = -25;
 dir.shadow.bias = -0.0002;
 dir.shadow.normalBias = 0.02;
 scene.add(dir);
@@ -217,7 +217,7 @@ const trackPoints = [
 
 const trackData = buildTrack({
   points: trackPoints,
-  trackWidth: 11,
+  trackWidth: 18,
   segments: 1000,
   roadY: 0.08,
 });
@@ -425,6 +425,90 @@ let yaw = startLine.yaw;
 kart.rotation.y = yaw;
 
 // ==============================
+// AI Kart
+// ==============================
+function buildKartModel(bodyColor) {
+  const g = new THREE.Group();
+  const bMat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.45, metalness: 0.1 });
+  const dkMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 1.0 });
+  const glMat = new THREE.MeshStandardMaterial({ color: 0x88aacc, roughness: 0.2, metalness: 0.0, transparent: true, opacity: 0.5 });
+  const ltMat = new THREE.MeshStandardMaterial({ color: 0xffffcc, roughness: 0.6, emissive: 0x222200 });
+
+  const b = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.6, 3.2), bMat); b.position.y = 0.55; b.castShadow = true; g.add(b);
+  const h = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.25, 1.2), bMat); h.position.set(0, 0.75, 1.05); h.castShadow = true; g.add(h);
+  const ws = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.35, 0.08), glMat); ws.position.set(0, 1.0, 0.55); ws.rotation.x = -0.35; ws.castShadow = true; g.add(ws);
+  const sp = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.15, 0.35), dkMat); sp.position.set(0, 1.0, -1.45); sp.castShadow = true; g.add(sp);
+  const hL2 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.15, 0.1), ltMat); const hR2 = hL2.clone(); hL2.position.set(-0.75, 0.55, 1.65); hR2.position.set(0.75, 0.55, 1.65); g.add(hL2, hR2);
+  const st = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.5, 1.0), dkMat); st.position.set(0, 0.8, -0.15); st.castShadow = true; g.add(st);
+
+  // Driver
+  const tr = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.35, 0.75, 16), new THREE.MeshStandardMaterial({ color: 0x33aa55, roughness: 0.9 }));
+  tr.position.set(0, 1.18, -0.15); tr.castShadow = true; g.add(tr);
+  const hd = new THREE.Mesh(new THREE.SphereGeometry(0.23, 18, 18), new THREE.MeshStandardMaterial({ color: 0xf2c9a0, roughness: 0.9 }));
+  hd.position.set(0, 1.7, -0.15); hd.castShadow = true; g.add(hd);
+
+  // Wheels
+  const wMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 1 });
+  const aiWheels = [];
+  function mkW(x, z) { const w = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.25, 18), wMat); w.rotation.z = Math.PI / 2; w.position.set(x, 0.35, z); w.castShadow = true; g.add(w); aiWheels.push(w); return w; }
+  mkW(-0.95, 1.15); mkW(0.95, 1.15); mkW(-0.95, -1.15); mkW(0.95, -1.15);
+
+  return { group: g, wheels: aiWheels };
+}
+
+const aiKartData = buildKartModel(0x3b8bff);
+const aiKart = aiKartData.group;
+scene.add(aiKart);
+
+// AI state — starts offset beside and behind the player
+let aiTrackT = 0.06;              // parametric position on the curve [0,1)
+const AI_SPEED = 14.5;            // units/sec — slightly slower than player max
+let aiNearestIdx = START_IDX;
+
+// Spawn AI next to the player on the grid
+{
+  const left = trackData.sampleLeft[START_IDX];
+  aiKart.position.copy(kart.position).addScaledVector(left, 4);
+  aiKart.position.addScaledVector(startLine.tangent, -2);
+  aiKart.rotation.y = yaw;
+}
+
+function updateAI(dt) {
+  const N = trackData.segments;
+  const curve = trackData.curve;
+
+  // Advance parametric t based on AI speed
+  // Arc-length of whole curve ≈ curve.getLength()
+  const totalLen = curve.getLength();
+  aiTrackT += (AI_SPEED * dt) / totalLen;
+  if (aiTrackT >= 1) aiTrackT -= 1;
+
+  // Target: a lookahead point slightly ahead on the curve
+  const lookahead = 0.012;
+  let targetT = aiTrackT + lookahead;
+  if (targetT >= 1) targetT -= 1;
+
+  const targetPos = curve.getPointAt(targetT);
+  targetPos.y = 0;
+
+  const curPos = curve.getPointAt(aiTrackT);
+  curPos.y = 0;
+
+  // Smoothly move AI toward target
+  const aiYaw = Math.atan2(targetPos.x - curPos.x, targetPos.z - curPos.z);
+  aiKart.position.lerp(curPos, 8 * dt);
+  aiKart.position.y = 0;
+  aiKart.rotation.y = aiYaw;
+
+  // Spin wheels
+  const spin = AI_SPEED * dt * 1.5;
+  for (const w of aiKartData.wheels) w.rotation.x += spin;
+
+  // Update nearest index for collision
+  aiNearestIdx = findNearestSampleIndexXZFor(aiKart.position, aiNearestIdx);
+}
+
+// ==============================
 // Input
 // ==============================
 const keys = { w: false, a: false, s: false, d: false };
@@ -447,6 +531,8 @@ let lastY = 0;
 let orbitYaw = Math.PI;
 let orbitPitch = 0.4;
 let orbitDistance = 9.0;
+let manualYawOffset = 0;          // temporary offset while dragging
+const CAM_FOLLOW_SPEED = 3.0;     // how fast the camera re-centres (higher = snappier)
 
 renderer.domElement.addEventListener("mousedown", (e) => {
   isDragging = true;
@@ -461,7 +547,7 @@ window.addEventListener("mousemove", (e) => {
   lastX = e.clientX;
   lastY = e.clientY;
 
-  orbitYaw -= dx * 0.005;
+  manualYawOffset -= dx * 0.005;
   orbitPitch -= dy * 0.005;
   orbitPitch = Math.max(0.08, Math.min(1.15, orbitPitch));
 });
@@ -495,13 +581,17 @@ const speedEl = document.getElementById("speed");
 const clock = new THREE.Clock();
 
 function findNearestSampleIndexXZ(pos) {
+  return findNearestSampleIndexXZFor(pos, nearestIdx);
+}
+
+function findNearestSampleIndexXZFor(pos, hint) {
   const N = trackData.samplePts.length;
-  const window = 40;
-  let bestIdx = nearestIdx;
+  const searchWin = 40;
+  let bestIdx = hint;
   let bestD2 = Infinity;
 
-  for (let offset = -window; offset <= window; offset++) {
-    let idx = (nearestIdx + offset) % N;
+  for (let offset = -searchWin; offset <= searchWin; offset++) {
+    let idx = (hint + offset) % N;
     if (idx < 0) idx += N;
     const p = trackData.samplePts[idx];
     const dx = pos.x - p.x;
@@ -513,12 +603,12 @@ function findNearestSampleIndexXZ(pos) {
     }
   }
 
-  nearestIdx = bestIdx;
   return bestIdx;
 }
 
 function resolveTrackCollision() {
   const idx = findNearestSampleIndexXZ(kart.position);
+  nearestIdx = idx;
   const center = trackData.samplePts[idx];
   const left = trackData.sampleLeft[idx];
 
@@ -535,6 +625,32 @@ function resolveTrackCollision() {
   }
 
   kart.position.y = 0;
+}
+
+// Kart-to-kart collision
+const COLLISION_DIST = 2.4;   // combined radii for two karts
+const BUMP_FORCE = 12;
+function resolveKartCollision(dt) {
+  const dx = kart.position.x - aiKart.position.x;
+  const dz = kart.position.z - aiKart.position.z;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+
+  if (dist < COLLISION_DIST && dist > 0.001) {
+    const overlap = COLLISION_DIST - dist;
+    const nx = dx / dist;
+    const nz = dz / dist;
+
+    // Push player kart out
+    kart.position.x += nx * overlap * 0.5;
+    kart.position.z += nz * overlap * 0.5;
+
+    // Push AI kart out
+    aiKart.position.x -= nx * overlap * 0.5;
+    aiKart.position.z -= nz * overlap * 0.5;
+
+    // Slow the player down on impact
+    speed *= 0.85;
+  }
 }
 
 function updatePhysics(dt) {
@@ -581,17 +697,34 @@ function updatePhysics(dt) {
   steering.rotation.y = steerInput * 0.65;
 
   resolveTrackCollision();
+  resolveKartCollision(dt);
 
   if (speedEl) speedEl.textContent = speed.toFixed(1);
 }
 
-function updateCamera() {
+function updateCamera(dt) {
+  // Desired yaw is directly behind the kart (+PI from kart heading)
+  const desiredYaw = yaw + Math.PI;
+
+  // Smoothly decay the manual drag offset back to zero
+  if (!isDragging) {
+    manualYawOffset *= Math.max(0, 1 - CAM_FOLLOW_SPEED * dt);
+  }
+
+  // Lerp orbitYaw toward desiredYaw (shortest-arc)
+  let diff = desiredYaw - orbitYaw;
+  // Normalise to (-PI, PI]
+  diff = ((diff + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+  orbitYaw += diff * Math.min(1, CAM_FOLLOW_SPEED * dt);
+
+  const finalYaw = orbitYaw + manualYawOffset;
+
   const target = new THREE.Vector3().copy(kart.position);
   target.y += 1.25;
 
-  const x = orbitDistance * Math.cos(orbitPitch) * Math.sin(orbitYaw);
+  const x = orbitDistance * Math.cos(orbitPitch) * Math.sin(finalYaw);
   const y = orbitDistance * Math.sin(orbitPitch);
-  const z = orbitDistance * Math.cos(orbitPitch) * Math.cos(orbitYaw);
+  const z = orbitDistance * Math.cos(orbitPitch) * Math.cos(finalYaw);
 
   camera.position.set(target.x + x, target.y + y, target.z + z);
   camera.lookAt(target);
@@ -601,8 +734,15 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.033, clock.getDelta());
 
+  updateAI(dt);
   updatePhysics(dt);
-  updateCamera();
+  updateCamera(dt);
+
+  // Keep shadow light centred on the kart so the tight frustum always covers it
+  dir.position.set(kart.position.x + 30, 40, kart.position.z + 20);
+  dir.target.position.copy(kart.position);
+  dir.target.updateMatrixWorld();
+
   renderer.render(scene, camera);
 }
 animate();
