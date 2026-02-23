@@ -182,42 +182,44 @@ function buildTrack({ points, trackWidth = 11, segments = 900, roadY = 0.08 }) {
 // 4) straight back (down -Z) returning to start
 // ==============================
 const trackPoints = [
-    // --- Start: LONG STRAIGHT (up +Z), lane at x = 0 ---
-    new THREE.Vector3(0, 0, -40),
-    new THREE.Vector3(0, 0, -10),
+    // --- LONG STRAIGHT (up +Z) at x = 0 ---
+    new THREE.Vector3(0, 0, -55),
+    new THREE.Vector3(0, 0, -15),
     new THREE.Vector3(0, 0, 25),
     new THREE.Vector3(0, 0, 65),
     new THREE.Vector3(0, 0, 105),
-  
-    // --- TOP SECTION: LEFT TURN + SHIFT to the right lane (x -> +80) ---
-    new THREE.Vector3(-10, 0, 120),
-    new THREE.Vector3(-25, 0, 135),
-    new THREE.Vector3(10, 0, 150),
-    new THREE.Vector3(45, 0, 150),
-    new THREE.Vector3(80, 0, 135),
-  
-    // --- RIGHT TURN SECTION (start heading down) ---
-    new THREE.Vector3(92, 0, 120),
-    new THREE.Vector3(96, 0, 95),
-  
-    // --- LONG STRAIGHT BACK (down -Z), lane at x = +90 ---
-    new THREE.Vector3(96, 0, 55),
-    new THREE.Vector3(96, 0, 15),
-    new THREE.Vector3(96, 0, -25),
-    new THREE.Vector3(96, 0, -65),
-  
-    // --- BOTTOM SECTION: curve back to start lane (x -> 0)---
-    new THREE.Vector3(85, 0, -85),
-    new THREE.Vector3(60, 0, -100),
-    new THREE.Vector3(30, 0, -105),
-    new THREE.Vector3(0, 0, -95),
+
+    // --- TOP TURN: smooth right-hand sweep ---
+    new THREE.Vector3(5, 0, 135),
+    new THREE.Vector3(20, 0, 155),
+    new THREE.Vector3(50, 0, 165),
+    new THREE.Vector3(80, 0, 155),
+    new THREE.Vector3(100, 0, 135),
+
+    // --- RIGHT TURN into back straight ---
+    new THREE.Vector3(110, 0, 110),
+    new THREE.Vector3(115, 0, 85),
+
+    // --- BACK STRAIGHT (down -Z) at x ≈ 115 ---
+    new THREE.Vector3(115, 0, 55),
+    new THREE.Vector3(115, 0, 15),
+    new THREE.Vector3(115, 0, -25),
+    new THREE.Vector3(115, 0, -65),
+
+    // --- BOTTOM TURN: wide arc back to start straight ---
+    new THREE.Vector3(110, 0, -95),
+    new THREE.Vector3(90, 0, -120),
+    new THREE.Vector3(60, 0, -135),
+    new THREE.Vector3(30, 0, -130),
+    new THREE.Vector3(5, 0, -110),
+    new THREE.Vector3(0, 0, -85),
   ];
   
   
 
 const trackData = buildTrack({
   points: trackPoints,
-  trackWidth: 18,
+  trackWidth: 36,
   segments: 1000,
   roadY: 0.08,
 });
@@ -412,14 +414,21 @@ const wheels = [
   makeWheel(0.95, -1.15),
 ];
 
-// Spawn behind the start line, facing along the straight
+// Spawn at the start line — player gets lane index 2 (centre of 5)
+// All 5 karts are evenly spread across the start line axis
+const LANE_SPACING = 7;          // units between lane centres
+const TOTAL_LANES = 5;           // 1 player + 4 AI
+const LANE_ORIGIN = -(TOTAL_LANES - 1) / 2 * LANE_SPACING; // leftmost lane offset
+const PLAYER_LANE = 2;           // 0-indexed, centre
+
 kart.position.set(startLine.position.x, 0, startLine.position.z);
 let yaw = startLine.yaw;
 
-// Put kart behind line
+// Offset player to its lane (lateral along the start line)
 {
-  const tan = startLine.tangent.clone().normalize();
-  kart.position.addScaledVector(tan, -3.2);
+  const left = trackData.sampleLeft[START_IDX];
+  const laneOffset = LANE_ORIGIN + PLAYER_LANE * LANE_SPACING;
+  kart.position.addScaledVector(left, laneOffset);
 }
 
 kart.rotation.y = yaw;
@@ -456,57 +465,186 @@ function buildKartModel(bodyColor) {
   return { group: g, wheels: aiWheels };
 }
 
-const aiKartData = buildKartModel(0x3b8bff);
-const aiKart = aiKartData.group;
-scene.add(aiKart);
+// ==============================
+// AI Racers (4 total) — all lined up on the start line, each with unique attributes
+// ==============================
+const START_T = 0.06;  // same parametric t as the player's start
 
-// AI state — starts offset beside and behind the player
-let aiTrackT = 0.06;              // parametric position on the curve [0,1)
-const AI_SPEED = 14.5;            // units/sec — slightly slower than player max
-let aiNearestIdx = START_IDX;
+// AI lane indices (0-4, skipping PLAYER_LANE = 2)
+const AI_LANES = [0, 1, 3, 4];
 
-// Spawn AI next to the player on the grid
-{
+const AI_PROFILES = [
+  {
+    name: "Speedster",
+    color: 0x3b8bff,       // blue
+    speed: 19.0,           // fastest top speed
+    lookahead: 0.008,      // short lookahead → late apex, worse cornering
+    lerpRate: 5,           // sluggish turn responsiveness
+    lateralOff: -5,        // prefers far right (matches lane 0 side)
+    lane: AI_LANES[0],
+  },
+  {
+    name: "Steady",
+    color: 0xff9f1c,       // orange
+    speed: 18.0,           // moderate speed
+    lookahead: 0.018,      // long lookahead → smooth, wide racing line
+    lerpRate: 10,          // very responsive steering
+    lateralOff: -2,        // prefers slightly right (matches lane 1 side)
+    lane: AI_LANES[1],
+  },
+  {
+    name: "Aggressor",
+    color: 0x2ec4b6,       // teal
+    speed: 17.7,           // fast
+    lookahead: 0.012,      // balanced lookahead
+    lerpRate: 6,           // slightly sluggish
+    lateralOff: 2,         // prefers slightly left (matches lane 3 side)
+    lane: AI_LANES[2],
+  },
+  {
+    name: "Rookie",
+    color: 0xc77dff,       // purple
+    speed: 17.5,           // slowest
+    lookahead: 0.022,      // very far lookahead → wide sweeping turns
+    lateralOff: 5,         // prefers far left (matches lane 4 side)
+    lerpRate: 12,          // snappy steering but slow overall
+    lane: AI_LANES[3],
+  },
+];
+
+const aiRacers = [];
+
+for (const prof of AI_PROFILES) {
+  const data = buildKartModel(prof.color);
+  scene.add(data.group);
+
+  // Place on the start line in its assigned lane — same row as the player
   const left = trackData.sampleLeft[START_IDX];
-  aiKart.position.copy(kart.position).addScaledVector(left, 4);
-  aiKart.position.addScaledVector(startLine.tangent, -2);
-  aiKart.rotation.y = yaw;
+  const laneOffset = LANE_ORIGIN + prof.lane * LANE_SPACING;
+  data.group.position.copy(startLine.position);
+  data.group.position.y = 0;
+  data.group.position.addScaledVector(left, laneOffset);
+  data.group.rotation.y = yaw;
+
+  aiRacers.push({
+    data,
+    group: data.group,
+    wheels: data.wheels,
+    trackT: START_T,
+    nearestIdx: START_IDX,
+    maxSpeed: prof.speed,
+    currentSpeed: 0,
+    lookahead: prof.lookahead,
+    lerpRate: prof.lerpRate,
+    lateralOff: prof.lateralOff,
+    currentLateral: laneOffset,
+    // Spinout state
+    spinning: false,
+    spinVel: 0,
+  });
 }
 
-function updateAI(dt) {
-  const N = trackData.segments;
+function updateAllAI(dt) {
   const curve = trackData.curve;
-
-  // Advance parametric t based on AI speed
-  // Arc-length of whole curve ≈ curve.getLength()
   const totalLen = curve.getLength();
-  aiTrackT += (AI_SPEED * dt) / totalLen;
-  if (aiTrackT >= 1) aiTrackT -= 1;
 
-  // Target: a lookahead point slightly ahead on the curve
-  const lookahead = 0.012;
-  let targetT = aiTrackT + lookahead;
-  if (targetT >= 1) targetT -= 1;
+  for (const ai of aiRacers) {
+    // --- Handle spinout ---
+    if (ai.spinning) {
+      // Decelerate
+      ai.currentSpeed *= Math.max(0, 1 - 4 * dt);
 
-  const targetPos = curve.getPointAt(targetT);
-  targetPos.y = 0;
+      // Apply spin rotation
+      ai.group.rotation.y += ai.spinVel * dt;
 
-  const curPos = curve.getPointAt(aiTrackT);
-  curPos.y = 0;
+      // Decay spin
+      const spinSign = Math.sign(ai.spinVel);
+      ai.spinVel -= spinSign * SPIN_DECAY * dt;
+      if (Math.abs(ai.spinVel) < SPIN_RECOVER_THRESHOLD) {
+        ai.spinning = false;
+        ai.spinVel = 0;
+        // Snap trackT to current position so AI resumes from here
+        ai.nearestIdx = findNearestSampleIndexXZFor(ai.group.position, ai.nearestIdx);
+        ai.trackT = ai.nearestIdx / trackData.segments;
+      }
 
-  // Smoothly move AI toward target
-  const aiYaw = Math.atan2(targetPos.x - curPos.x, targetPos.z - curPos.z);
-  aiKart.position.lerp(curPos, 8 * dt);
-  aiKart.position.y = 0;
-  aiKart.rotation.y = aiYaw;
+      // Still spin wheels
+      const spin = ai.currentSpeed * dt * 1.5;
+      for (const w of ai.wheels) w.rotation.x += spin;
+      continue;  // skip normal AI driving while spinning
+    }
 
-  // Spin wheels
-  const spin = AI_SPEED * dt * 1.5;
-  for (const w of aiKartData.wheels) w.rotation.x += spin;
+    // --- Normal driving ---
+    // Gradually accelerate from 0 to max speed
+    const AI_ACCEL = ACCEL;  // same as player acceleration
+    ai.currentSpeed = Math.min(ai.maxSpeed, ai.currentSpeed + AI_ACCEL * dt);
 
-  // Update nearest index for collision
-  aiNearestIdx = findNearestSampleIndexXZFor(aiKart.position, aiNearestIdx);
+    // Gradually blend from starting lane toward preferred racing line
+    const LATERAL_BLEND_SPEED = 0.3;  // how fast to transition (units/sec factor)
+    const lateralDiff = ai.lateralOff - ai.currentLateral;
+    ai.currentLateral += lateralDiff * LATERAL_BLEND_SPEED * dt;
+
+    // Advance parametric t based on current (ramping) speed
+    ai.trackT += (ai.currentSpeed * dt) / totalLen;
+    if (ai.trackT >= 1) ai.trackT -= 1;
+
+    // Per-racer lookahead controls how early it starts turning
+    let targetT = ai.trackT + ai.lookahead;
+    if (targetT >= 1) targetT -= 1;
+
+    const targetPos = curve.getPointAt(targetT);
+    targetPos.y = 0;
+    const curPos = curve.getPointAt(ai.trackT);
+    curPos.y = 0;
+
+    // Apply current (blended) lateral offset
+    const tan = curve.getTangentAt(ai.trackT).setY(0).normalize();
+    const leftDir = new THREE.Vector3(-tan.z, 0, tan.x);
+    curPos.addScaledVector(leftDir, ai.currentLateral);
+
+    // Apply the same lateral offset to the target so the kart faces along the track
+    const tanTarget = curve.getTangentAt(targetT).setY(0).normalize();
+    const leftTarget = new THREE.Vector3(-tanTarget.z, 0, tanTarget.x);
+    targetPos.addScaledVector(leftTarget, ai.currentLateral);
+
+    // Orient along the track tangent for a clean heading
+    const aiYaw = Math.atan2(tan.x, tan.z);
+    ai.group.position.lerp(curPos, ai.lerpRate * dt);
+    ai.group.position.y = 0;
+    ai.group.rotation.y = aiYaw;
+
+    // Spin wheels
+    const spin = ai.currentSpeed * dt * 1.5;
+    for (const w of ai.wheels) w.rotation.x += spin;
+
+    ai.nearestIdx = findNearestSampleIndexXZFor(ai.group.position, ai.nearestIdx);
+  }
 }
+
+// ==============================
+// Countdown + Race state
+// ==============================
+let raceStarted = false;
+const countdownEl = document.getElementById("countdown");
+
+function startCountdown() {
+  let count = 3;
+  countdownEl.textContent = count;
+  const interval = setInterval(() => {
+    count--;
+    if (count > 0) {
+      countdownEl.textContent = count;
+    } else if (count === 0) {
+      countdownEl.textContent = "GO!";
+    } else {
+      countdownEl.textContent = "";
+      raceStarted = true;
+      clearInterval(interval);
+    }
+  }, 1000);
+}
+
+startCountdown();
 
 // ==============================
 // Input
@@ -561,6 +699,12 @@ renderer.domElement.addEventListener("wheel", (e) => {
 // ==============================
 let speed = 0;
 let steerInput = 0;
+
+// Player spinout state
+let playerSpinning = false;
+let playerSpinVel = 0;            // radians/sec of spin
+const SPIN_DECAY = 3.0;           // how fast spin slows (rad/s²)
+const SPIN_RECOVER_THRESHOLD = 0.3; // stop spinning when |spinVel| drops below this
 
 const MAX_SPEED = 18;
 const ACCEL = 16;
@@ -627,33 +771,168 @@ function resolveTrackCollision() {
   kart.position.y = 0;
 }
 
-// Kart-to-kart collision
-const COLLISION_DIST = 2.4;   // combined radii for two karts
-const BUMP_FORCE = 12;
+// Kart-to-kart collision  (OBB – oriented bounding box)
+const KART_HALF_W = 1.05;   // half-width
+const KART_HALF_L = 1.6;    // half-length
+
+// SAT (Separating Axis Theorem) helpers for 2D OBBs in the XZ plane
+function getOBBCorners(pos, yawAngle, hw, hl) {
+  const cosA = Math.cos(yawAngle);
+  const sinA = Math.sin(yawAngle);
+  // local axes in world XZ
+  const fx = sinA, fz = cosA;   // forward (local +Z)
+  const lx = -fz,  lz = fx;    // left    (local +X flipped to left)
+  return [
+    { x: pos.x + lx * hw + fx * hl, z: pos.z + lz * hw + fz * hl },
+    { x: pos.x - lx * hw + fx * hl, z: pos.z - lz * hw + fz * hl },
+    { x: pos.x - lx * hw - fx * hl, z: pos.z - lz * hw - fz * hl },
+    { x: pos.x + lx * hw - fx * hl, z: pos.z + lz * hw - fz * hl },
+  ];
+}
+
+function projectCorners(corners, ax, az) {
+  let min = Infinity, max = -Infinity;
+  for (const c of corners) {
+    const d = c.x * ax + c.z * az;
+    if (d < min) min = d;
+    if (d > max) max = d;
+  }
+  return { min, max };
+}
+
+function obbOverlap(cornersA, cornersB) {
+  // 4 potential separating axes: 2 edge normals from each box
+  const axes = [];
+  for (const corners of [cornersA, cornersB]) {
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      const ex = corners[j].x - corners[i].x;
+      const ez = corners[j].z - corners[i].z;
+      const len = Math.sqrt(ex * ex + ez * ez) || 1;
+      axes.push({ x: -ez / len, z: ex / len }); // perpendicular
+    }
+  }
+
+  let minOverlap = Infinity;
+  let minAxis = null;
+
+  for (const a of axes) {
+    const pA = projectCorners(cornersA, a.x, a.z);
+    const pB = projectCorners(cornersB, a.x, a.z);
+    const overlap = Math.min(pA.max - pB.min, pB.max - pA.min);
+    if (overlap <= 0) return null; // separated
+    if (overlap < minOverlap) {
+      minOverlap = overlap;
+      minAxis = a;
+    }
+  }
+
+  // Make sure the push direction points from B toward A
+  const cx = cornersA.reduce((s, c) => s + c.x, 0) / 4;
+  const cz = cornersA.reduce((s, c) => s + c.z, 0) / 4;
+  const bx = cornersB.reduce((s, c) => s + c.x, 0) / 4;
+  const bz = cornersB.reduce((s, c) => s + c.z, 0) / 4;
+  const dot = (cx - bx) * minAxis.x + (cz - bz) * minAxis.z;
+  if (dot < 0) { minAxis.x = -minAxis.x; minAxis.z = -minAxis.z; }
+
+  return { overlap: minOverlap, nx: minAxis.x, nz: minAxis.z };
+}
+
 function resolveKartCollision(dt) {
-  const dx = kart.position.x - aiKart.position.x;
-  const dz = kart.position.z - aiKart.position.z;
-  const dist = Math.sqrt(dx * dx + dz * dz);
+  const cornersP = getOBBCorners(kart.position, yaw, KART_HALF_W, KART_HALF_L);
 
-  if (dist < COLLISION_DIST && dist > 0.001) {
-    const overlap = COLLISION_DIST - dist;
-    const nx = dx / dist;
-    const nz = dz / dist;
+  // Player vs every AI kart
+  for (const ai of aiRacers) {
+    const cornersAI = getOBBCorners(ai.group.position, ai.group.rotation.y, KART_HALF_W, KART_HALF_L);
+    const result = obbOverlap(cornersP, cornersAI);
+    if (result) {
+      const { overlap, nx, nz } = result;
+      kart.position.x += nx * overlap * 0.5;
+      kart.position.z += nz * overlap * 0.5;
+      ai.group.position.x -= nx * overlap * 0.5;
+      ai.group.position.z -= nz * overlap * 0.5;
 
-    // Push player kart out
-    kart.position.x += nx * overlap * 0.5;
-    kart.position.z += nz * overlap * 0.5;
+      // Trigger spinouts on both
+      const impactSpeed = Math.abs(speed) + ai.currentSpeed;
+      if (impactSpeed > 4) {  // only spin out on meaningful impacts
+        // Player spinout
+        if (!playerSpinning) {
+          playerSpinning = true;
+          playerSpinVel = (Math.random() > 0.5 ? 1 : -1) * (3 + impactSpeed * 0.15);
+        }
+        // AI spinout
+        if (!ai.spinning) {
+          ai.spinning = true;
+          ai.spinVel = (Math.random() > 0.5 ? 1 : -1) * (3 + impactSpeed * 0.15);
+        }
+      }
 
-    // Push AI kart out
-    aiKart.position.x -= nx * overlap * 0.5;
-    aiKart.position.z -= nz * overlap * 0.5;
+      speed *= 0.3;
+      ai.currentSpeed *= 0.3;
+    }
+  }
 
-    // Slow the player down on impact
-    speed *= 0.85;
+  // AI vs AI kart collision
+  for (let i = 0; i < aiRacers.length; i++) {
+    for (let j = i + 1; j < aiRacers.length; j++) {
+      const a = aiRacers[i], b = aiRacers[j];
+      const cA = getOBBCorners(a.group.position, a.group.rotation.y, KART_HALF_W, KART_HALF_L);
+      const cB = getOBBCorners(b.group.position, b.group.rotation.y, KART_HALF_W, KART_HALF_L);
+      const res = obbOverlap(cA, cB);
+      if (res) {
+        a.group.position.x += res.nx * res.overlap * 0.5;
+        a.group.position.z += res.nz * res.overlap * 0.5;
+        b.group.position.x -= res.nx * res.overlap * 0.5;
+        b.group.position.z -= res.nz * res.overlap * 0.5;
+
+        const impactSpeed = a.currentSpeed + b.currentSpeed;
+        if (impactSpeed > 4) {
+          if (!a.spinning) {
+            a.spinning = true;
+            a.spinVel = (Math.random() > 0.5 ? 1 : -1) * (3 + impactSpeed * 0.15);
+          }
+          if (!b.spinning) {
+            b.spinning = true;
+            b.spinVel = (Math.random() > 0.5 ? 1 : -1) * (3 + impactSpeed * 0.15);
+          }
+        }
+        a.currentSpeed *= 0.3;
+        b.currentSpeed *= 0.3;
+      }
+    }
   }
 }
 
 function updatePhysics(dt) {
+  // --- Handle player spinout ---
+  if (playerSpinning) {
+    // Decelerate hard
+    speed *= Math.max(0, 1 - 4 * dt);
+
+    // Apply spin
+    yaw += playerSpinVel * dt;
+    kart.rotation.y = yaw;
+
+    // Decay spin velocity
+    const spinSign = Math.sign(playerSpinVel);
+    playerSpinVel -= spinSign * SPIN_DECAY * dt;
+    if (Math.abs(playerSpinVel) < SPIN_RECOVER_THRESHOLD) {
+      playerSpinning = false;
+      playerSpinVel = 0;
+      speed = 0;
+    }
+
+    // Still spin wheels
+    const wheelSpin = speed * dt * 1.5;
+    for (const w of wheels) w.rotation.x += wheelSpin;
+
+    resolveTrackCollision();
+    resolveKartCollision(dt);
+    if (speedEl) speedEl.textContent = speed.toFixed(1);
+    return;
+  }
+
+  // --- Normal driving ---
   const throttle = keys.w ? 1 : 0;
   const brake = keys.s ? 1 : 0;
 
@@ -734,8 +1013,10 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.033, clock.getDelta());
 
-  updateAI(dt);
-  updatePhysics(dt);
+  if (raceStarted) {
+    updateAllAI(dt);
+    updatePhysics(dt);
+  }
   updateCamera(dt);
 
   // Keep shadow light centred on the kart so the tight frustum always covers it
