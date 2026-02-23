@@ -476,6 +476,7 @@ const AI_LANES = [0, 1, 3, 4];
 const AI_PROFILES = [
   {
     name: "Speedster",
+    colorLabel: "Blue",
     color: 0x3b8bff,       // blue
     speed: 19.0,           // fastest top speed
     lookahead: 0.008,      // short lookahead → late apex, worse cornering
@@ -485,6 +486,7 @@ const AI_PROFILES = [
   },
   {
     name: "Steady",
+    colorLabel: "Orange",
     color: 0xff9f1c,       // orange
     speed: 18.0,           // moderate speed
     lookahead: 0.018,      // long lookahead → smooth, wide racing line
@@ -494,6 +496,7 @@ const AI_PROFILES = [
   },
   {
     name: "Aggressor",
+    colorLabel: "Teal",
     color: 0x2ec4b6,       // teal
     speed: 17.7,           // fast
     lookahead: 0.012,      // balanced lookahead
@@ -503,6 +506,7 @@ const AI_PROFILES = [
   },
   {
     name: "Rookie",
+    colorLabel: "Purple",
     color: 0xc77dff,       // purple
     speed: 17.5,           // slowest
     lookahead: 0.022,      // very far lookahead → wide sweeping turns
@@ -530,6 +534,7 @@ for (const prof of AI_PROFILES) {
     data,
     group: data.group,
     wheels: data.wheels,
+    colorLabel: prof.colorLabel,
     trackT: START_T,
     nearestIdx: START_IDX,
     maxSpeed: prof.speed,
@@ -541,6 +546,9 @@ for (const prof of AI_PROFILES) {
     // Spinout state
     spinning: false,
     spinVel: 0,
+    // Race state
+    lap: 1,
+    prevProgress: START_T,
   });
 }
 
@@ -722,7 +730,74 @@ const allowedLateral = trackData.halfW - KART_RADIUS - TRACK_MARGIN;
 let nearestIdx = START_IDX;
 
 const speedEl = document.getElementById("speed");
+const lapTimerEl = document.getElementById("lapTimer");
+const leaderboardEl = document.getElementById("leaderboard");
 const clock = new THREE.Clock();
+
+let playerLap = 1;
+let playerPrevProgress = START_T;
+let playerLapElapsed = 0;
+
+function formatTimeSec(seconds) {
+  const ms = Math.floor((seconds % 1) * 1000).toString().padStart(3, "0");
+  const totalSec = Math.floor(seconds);
+  const mins = Math.floor(totalSec / 60).toString().padStart(2, "0");
+  const sec = (totalSec % 60).toString().padStart(2, "0");
+  return `${mins}:${sec}.${ms}`;
+}
+
+function updateLapWrap(racer, progress, speedMag) {
+  if (racer.prevProgress > 0.95 && progress < 0.05 && speedMag > 1) {
+    racer.lap += 1;
+  }
+  racer.prevProgress = progress;
+}
+
+function updateRaceHud(dt) {
+  if (!lapTimerEl || !leaderboardEl) return;
+
+  if (raceStarted) {
+    playerLapElapsed += dt;
+    const playerProgress = nearestIdx / trackData.segments;
+
+    if (playerPrevProgress > 0.95 && playerProgress < 0.05 && Math.abs(speed) > 1) {
+      playerLap += 1;
+      playerLapElapsed = 0;
+    }
+    playerPrevProgress = playerProgress;
+
+    for (const ai of aiRacers) {
+      const aiProgress = ai.trackT;
+      updateLapWrap(ai, aiProgress, ai.currentSpeed);
+    }
+  }
+
+  const playerProgress = nearestIdx / trackData.segments;
+  playerPrevProgress = playerProgress;
+
+  lapTimerEl.textContent = formatTimeSec(playerLapElapsed);
+
+  const entries = [
+    {
+      color: "Red",
+      lap: playerLap,
+      progress: playerProgress,
+      metric: (playerLap - 1) + playerProgress,
+    },
+    ...aiRacers.map((ai) => ({
+      color: ai.colorLabel,
+      lap: ai.lap,
+      progress: ai.trackT,
+      metric: (ai.lap - 1) + ai.trackT,
+    })),
+  ];
+
+  entries.sort((a, b) => b.metric - a.metric);
+  leaderboardEl.innerHTML = `<div style="margin-bottom:4px;"><b>Leaderboard</b></div>` +
+    entries
+      .map((entry, idx) => `<div class="row"><span>${idx + 1}. ${entry.color}</span><span>L${entry.lap}</span></div>`)
+      .join("");
+}
 
 function findNearestSampleIndexXZ(pos) {
   return findNearestSampleIndexXZFor(pos, nearestIdx);
@@ -771,11 +846,10 @@ function resolveTrackCollision() {
   kart.position.y = 0;
 }
 
-// Kart-to-kart collision  (OBB – oriented bounding box)
-const KART_HALF_W = 1.05;   // half-width
-const KART_HALF_L = 1.6;    // half-length
+// Kart-to-kart collision  
+const KART_HALF_W = 1.05;
+const KART_HALF_L = 1.6;
 
-// SAT (Separating Axis Theorem) helpers for 2D OBBs in the XZ plane
 function getOBBCorners(pos, yawAngle, hw, hl) {
   const cosA = Math.cos(yawAngle);
   const sinA = Math.sin(yawAngle);
@@ -838,6 +912,13 @@ function obbOverlap(cornersA, cornersB) {
   return { overlap: minOverlap, nx: minAxis.x, nz: minAxis.z };
 }
 
+function randomSign() {
+  if (Math.random() > 0.5) {
+    return 1;
+  }
+  return -1;
+}
+
 function resolveKartCollision(dt) {
   const cornersP = getOBBCorners(kart.position, yaw, KART_HALF_W, KART_HALF_L);
 
@@ -858,12 +939,12 @@ function resolveKartCollision(dt) {
         // Player spinout
         if (!playerSpinning) {
           playerSpinning = true;
-          playerSpinVel = (Math.random() > 0.5 ? 1 : -1) * (3 + impactSpeed * 0.15);
+          playerSpinVel = randomSign() * (3 + impactSpeed * 0.15);
         }
         // AI spinout
         if (!ai.spinning) {
           ai.spinning = true;
-          ai.spinVel = (Math.random() > 0.5 ? 1 : -1) * (3 + impactSpeed * 0.15);
+          ai.spinVel = randomSign() * (3 + impactSpeed * 0.15);
         }
       }
 
@@ -889,11 +970,11 @@ function resolveKartCollision(dt) {
         if (impactSpeed > 4) {
           if (!a.spinning) {
             a.spinning = true;
-            a.spinVel = (Math.random() > 0.5 ? 1 : -1) * (3 + impactSpeed * 0.15);
+            a.spinVel = randomSign() * (3 + impactSpeed * 0.15);
           }
           if (!b.spinning) {
             b.spinning = true;
-            b.spinVel = (Math.random() > 0.5 ? 1 : -1) * (3 + impactSpeed * 0.15);
+            b.spinVel = randomSign() * (3 + impactSpeed * 0.15);
           }
         }
         a.currentSpeed *= 0.3;
@@ -904,9 +985,9 @@ function resolveKartCollision(dt) {
 }
 
 function updatePhysics(dt) {
-  // --- Handle player spinout ---
+  //Handle spinout
   if (playerSpinning) {
-    // Decelerate hard
+    // Decelerate
     speed *= Math.max(0, 1 - 4 * dt);
 
     // Apply spin
@@ -932,12 +1013,24 @@ function updatePhysics(dt) {
     return;
   }
 
-  // --- Normal driving ---
-  const throttle = keys.w ? 1 : 0;
-  const brake = keys.s ? 1 : 0;
+  let throttle = 0;
+  if (keys.w) {
+    throttle = 1;
+  }
+
+  let brake = 0;
+  if (keys.s) {
+    brake = 1;
+  }
 
   // A = left (+), D = right (-)
-  const steerTarget = (keys.a ? 1 : 0) + (keys.d ? -1 : 0);
+  let steerTarget = 0;
+  if (keys.a) {
+    steerTarget += 1;
+  }
+  if (keys.d) {
+    steerTarget -= 1;
+  }
 
   // corresponding steering
   const steerDelta = steerTarget - steerInput;
@@ -960,7 +1053,11 @@ function updatePhysics(dt) {
   // Turning
   const steer = steerInput * MAX_STEER;
   const speedFactor = Math.min(1, Math.abs(speed) / MAX_SPEED);
-  const yawRate = TURN_GAIN * steer * speedFactor * (speed >= 0 ? 1 : -1);
+  let travelDirection = -1;
+  if (speed >= 0) {
+    travelDirection = 1;
+  }
+  const yawRate = TURN_GAIN * steer * speedFactor * travelDirection;
   yaw += yawRate * dt;
 
   // Integrate
@@ -990,7 +1087,7 @@ function updateCamera(dt) {
     manualYawOffset *= Math.max(0, 1 - CAM_FOLLOW_SPEED * dt);
   }
 
-  // Lerp orbitYaw toward desiredYaw (shortest-arc)
+  // Lerp orbitYaw toward desiredYaw
   let diff = desiredYaw - orbitYaw;
   // Normalise to (-PI, PI]
   diff = ((diff + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
@@ -1018,6 +1115,7 @@ function animate() {
     updatePhysics(dt);
   }
   updateCamera(dt);
+  updateRaceHud(dt);
 
   // Keep shadow light centred on the kart so the tight frustum always covers it
   dir.position.set(kart.position.x + 30, 40, kart.position.z + 20);
