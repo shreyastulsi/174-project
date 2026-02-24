@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bevel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="35%" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="65%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.24"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="16" y="0" fill="#f4f4f2"/>
+  <rect width="64" height="16" y="16" fill="#ce2f32"/>
+  <rect width="64" height="16" y="32" fill="#f4f4f2"/>
+  <rect width="64" height="16" y="48" fill="#ce2f32"/>
+  <path d="M0 16H64M0 32H64M0 48H64" stroke="#11161b" stroke-opacity="0.12" stroke-width="1"/>
+  <rect width="64" height="64" fill="url(#bevel)"/>
+</svg>
