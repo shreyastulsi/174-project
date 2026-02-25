@@ -256,6 +256,7 @@ dir.shadow.camera.bottom = -25;
 dir.shadow.bias = -0.0002;
 dir.shadow.normalBias = 0.02;
 scene.add(dir);
+scene.add(dir.target);
 
 // Ground
 const ground = new THREE.Mesh(
@@ -516,23 +517,26 @@ function addRoadArrowDecals(track, placements) {
     polygonOffsetUnits: -10,
   });
   mat.depthWrite = false;
+
   const meshes = [];
 
   for (const placement of placements) {
     const idx = ((placement.idx % track.segments) + track.segments) % track.segments;
-    const p = track.samplePts[idx];
-    const tan = track.sampleTan[idx];
-    const left = track.sampleLeft[idx];
+    const p = track.samplePts[idx].clone();
+    const tan = track.sampleTan[idx].clone().normalize();
+    const left = track.sampleLeft[idx].clone().normalize();
 
     const plane = new THREE.Mesh(
       new THREE.PlaneGeometry(placement.w ?? 7, placement.h ?? 5.8),
       mat
     );
+
     plane.position.copy(p);
     plane.position.addScaledVector(left, placement.lateral ?? 0);
     plane.position.y = track.edgeY + 0.04;
-    plane.rotation.x = -Math.PI / 2;
-    plane.rotation.y = Math.atan2(tan.x, tan.z) + (placement.yawOffset ?? 0);
+    const yawArrow = Math.atan2(tan.x, tan.z) + Math.PI + (placement.yawOffset ?? 0);
+    plane.rotation.set(-Math.PI / 2, 0, yawArrow);
+
     plane.renderOrder = 9;
     scene.add(plane);
     meshes.push(plane);
@@ -1653,6 +1657,10 @@ for (let aiIndex = 0; aiIndex < AI_PROFILES.length; aiIndex++) {
     // Race state
     lap: 1,
     prevProgress: START_T,
+    passedCheckpoint: false,
+    // Recovery state after spinout
+    recoveryTimer: 0,
+    recoveryLateralBlendBoost: 0,
   });
 }
 
@@ -1680,6 +1688,7 @@ function triggerPlayerBoost() {
   } else {
     speed = Math.min(MAX_SPEED * 0.55, speed + 4.0);
   }
+  showBoostFeedback();
 }
 
 function checkPlayerBoostPads() {
@@ -1716,11 +1725,15 @@ function checkAIBoostPads(ai) {
 
 function updateAllAI(dt) {
   const curve = trackData.curve;
-  const totalLen = curve.getLength();
+  const totalLen = trackData.loopLength; // use cached loop length
 
   for (const ai of aiRacers) {
     if (ai.boostTimer > 0) {
       ai.boostTimer = Math.max(0, ai.boostTimer - dt);
+    }
+
+    if (ai.recoveryTimer > 0) {
+      ai.recoveryTimer = Math.max(0, ai.recoveryTimer - dt);
     }
 
     // --- Handle spinout ---
@@ -1737,6 +1750,12 @@ function updateAllAI(dt) {
       if (Math.abs(ai.spinVel) < SPIN_RECOVER_THRESHOLD) {
         ai.spinning = false;
         ai.spinVel = 0;
+
+        // Enter a short recovery mode instead of snapping to perfect driving immediately
+        ai.recoveryTimer = AI_RECOVERY_DURATION;
+        ai.recoveryLateralBlendBoost = 0;
+        ai.currentSpeed *= 0.55;
+
         // Snap trackT to current position so AI resumes from here
         ai.nearestIdx = findNearestSampleIndexXZFor(ai.group.position, ai.nearestIdx);
         ai.trackT = ai.nearestIdx / trackData.segments;
@@ -1748,25 +1767,34 @@ function updateAllAI(dt) {
       continue;  // skip normal AI driving while spinning
     }
 
-    // --- Normal driving ---
-    // Gradually accelerate from 0 to max speed
+    // --- Normal driving / recovery driving ---
+    const recovering = ai.recoveryTimer > 0;
+    const recoveryAlpha = clamp01(ai.recoveryTimer / AI_RECOVERY_DURATION);
+
     const aiBoosted = ai.boostTimer > 0;
-    const aiTargetMaxSpeed = ai.maxSpeed * (aiBoosted ? (BOOST_MAX_MULT - 0.03) : 1);
-    const AI_ACCEL = ACCEL;  // same as player acceleration
+    const aiTargetMaxSpeedBase = ai.maxSpeed * (aiBoosted ? (BOOST_MAX_MULT - 0.03) : 1);
+    const aiTargetMaxSpeed = recovering ? aiTargetMaxSpeedBase * AI_RECOVERY_SPEED_MULT : aiTargetMaxSpeedBase;
+
+    const AI_ACCEL = ACCEL;
     const aiAccelBonus = aiBoosted ? BOOST_ACCEL_BONUS * 0.7 : 0;
     ai.currentSpeed = Math.min(aiTargetMaxSpeed, ai.currentSpeed + (AI_ACCEL + aiAccelBonus) * dt);
 
-    // Gradually blend from starting lane toward preferred racing line
-    const LATERAL_BLEND_SPEED = 0.3;  // how fast to transition (units/sec factor)
-    const lateralDiff = ai.lateralOff - ai.currentLateral;
-    ai.currentLateral += lateralDiff * LATERAL_BLEND_SPEED * dt;
+    // Gradually blend from current lateral toward preferred racing line
+    const baseBlendSpeed = 0.3;
+    const recoveryBlendMultiplier = recovering ? (0.35 + 0.65 * (1 - recoveryAlpha)) : 1.0;
+    const lateralBlendSpeed = baseBlendSpeed * recoveryBlendMultiplier;
 
-    // Advance parametric t based on current (ramping) speed
+    const lateralDiff = ai.lateralOff - ai.currentLateral;
+    ai.currentLateral += lateralDiff * lateralBlendSpeed * dt;
+
+    // Advance parametric t based on current speed
     ai.trackT += (ai.currentSpeed * dt) / totalLen;
     if (ai.trackT >= 1) ai.trackT -= 1;
+    if (ai.trackT < 0) ai.trackT += 1;
 
     // Per-racer lookahead controls how early it starts turning
-    let targetT = ai.trackT + ai.lookahead;
+    const lookahead = ai.lookahead + (recovering ? AI_RECOVERY_LOOKAHEAD_BONUS : 0);
+    let targetT = ai.trackT + lookahead;
     if (targetT >= 1) targetT -= 1;
 
     const targetPos = curve.getPointAt(targetT);
@@ -1786,7 +1814,8 @@ function updateAllAI(dt) {
 
     // Orient along the track tangent for a clean heading
     const aiYaw = Math.atan2(tan.x, tan.z);
-    ai.group.position.lerp(curPos, ai.lerpRate * dt);
+    const lerpRate = recovering ? ai.lerpRate * AI_RECOVERY_LERP_MULT : ai.lerpRate;
+    ai.group.position.lerp(curPos, lerpRate * dt);
     ai.group.position.y = 0;
     ai.group.rotation.y = aiYaw;
 
@@ -2088,6 +2117,14 @@ window.addEventListener("keydown", (e) => {
     toggleRacePaused();
     return;
   }
+  if (!customizationActive && k === CAMERA_RESET_KEY) {
+    // Recenter camera directly behind kart
+    orbitYaw = yaw + Math.PI;
+    manualYawOffset = 0;
+    orbitPitch = 0.4;
+    orbitDistance = 9.0;
+    return;
+  }
   if (k in keys) keys[k] = true;
 });
 window.addEventListener("keyup", (e) => {
@@ -2162,6 +2199,45 @@ const BOOST_COAST_DRAG_MULT = 0.28;
 const BOOST_PLAYER_MIN_SPEED_FACTOR = 0.78;
 const BOOST_AI_MIN_SPEED_FACTOR = 0.86;
 
+// ==============================
+// Collision stability / gameplay polish
+// ==============================
+const COLLISION_BROADPHASE_RADIUS = 3.3;   // quick reject before SAT (roughly kart length+width)
+const COLLISION_PAIR_COOLDOWN = 0.10;      // seconds; prevents repeated spin-trigger every frame
+const MAX_SEPARATION_PUSH = 0.65;          // clamp positional correction per frame
+const MIN_COLLISION_RETRIGGER_SPEED = 1.2;
+
+// Pairwise cooldown maps
+const playerAICollisionCooldown = new Map();   // key: ai index -> timer
+const aiAICollisionCooldown = new Map();       // key: "i-j" -> timer
+
+// AI post-spin recovery tuning
+const AI_RECOVERY_DURATION = 0.9;
+const AI_RECOVERY_SPEED_MULT = 0.78;
+const AI_RECOVERY_LERP_MULT = 0.55;
+const AI_RECOVERY_LOOKAHEAD_BONUS = 0.006;
+
+// Camera polish
+const CAMERA_RESET_KEY = "c";
+const CAMERA_BOOST_FOV_BONUS = 4.5;       // degrees
+const CAMERA_SPEED_FOV_BONUS = 2.5;       // degrees at high speed
+const CAMERA_FOV_LERP_SPEED = 7.0;
+const CAMERA_TARGET_LERP_SPEED = 8.0;
+
+// Lap validation checkpoint (mid-track)
+const CHECKPOINT_T = 0.56; // roughly opposite side of loop
+const CHECKPOINT_WINDOW = 0.035;
+
+// Camera smoothed target cache
+const cameraTargetSmoothed = new THREE.Vector3();
+
+// Lightweight feedback UI state
+let boostFeedbackTimer = 0;
+let spinFeedbackTimer = 0;
+
+// Track progress checkpoint flags
+let playerPassedCheckpoint = false;
+
 let nearestIdx = START_IDX;
 let playerBoostTimer = 0;
 let playerBoostPadId = -1;
@@ -2218,9 +2294,12 @@ function resetPlayerRaceState() {
   playerLap = 1;
   playerPrevProgress = START_T;
   playerLapElapsed = 0;
+  playerPassedCheckpoint = false;
 
   steering.rotation.y = 0;
   for (const w of wheels) w.rotation.x = 0;
+
+  cameraTargetSmoothed.set(0, 0, 0);
 }
 
 function resetAIRaceState() {
@@ -2243,6 +2322,9 @@ function resetAIRaceState() {
     ai.spinVel = 0;
     ai.lap = 1;
     ai.prevProgress = START_T;
+    ai.passedCheckpoint = false;
+    ai.recoveryTimer = 0;
+    ai.recoveryLateralBlendBoost = 0;
 
     for (const w of ai.wheels) w.rotation.x = 0;
   }
@@ -2258,6 +2340,11 @@ function resetRaceToStartState() {
 
   resetPlayerRaceState();
   resetAIRaceState();
+
+  playerAICollisionCooldown.clear();
+  aiAICollisionCooldown.clear();
+  boostFeedbackTimer = 0;
+  spinFeedbackTimer = 0;
 
   if (countdownEl) countdownEl.textContent = "";
   if (speedEl) speedEl.textContent = "0.0";
@@ -2288,9 +2375,17 @@ function formatTimeSec(seconds) {
 }
 
 function updateLapWrap(racer, progress, speedMag) {
-  if (racer.prevProgress > 0.95 && progress < 0.05 && speedMag > 1) {
-    racer.lap += 1;
+  // Mark checkpoint when racer passes the mid-track checkpoint
+  if (progressNear(progress, CHECKPOINT_T)) {
+    racer.passedCheckpoint = true;
   }
+
+  // Only count lap when crossing start line after checkpoint has been passed
+  if (racer.prevProgress > 0.95 && progress < 0.05 && speedMag > 1 && racer.passedCheckpoint) {
+    racer.lap += 1;
+    racer.passedCheckpoint = false;
+  }
+
   racer.prevProgress = progress;
 }
 
@@ -2301,10 +2396,16 @@ function updateRaceHud(dt) {
     playerLapElapsed += dt;
     const playerProgress = nearestIdx / trackData.segments;
 
-    if (playerPrevProgress > 0.95 && playerProgress < 0.05 && Math.abs(speed) > 1) {
+    if (progressNear(playerProgress, CHECKPOINT_T)) {
+      playerPassedCheckpoint = true;
+    }
+
+    if (playerPrevProgress > 0.95 && playerProgress < 0.05 && Math.abs(speed) > 1 && playerPassedCheckpoint) {
       playerLap += 1;
       playerLapElapsed = 0;
+      playerPassedCheckpoint = false;
     }
+
     playerPrevProgress = playerProgress;
 
     for (const ai of aiRacers) {
@@ -2460,96 +2561,241 @@ function randomSign() {
   return -1;
 }
 
+function clamp01(x) {
+  return Math.max(0, Math.min(1, x));
+}
+
+function pairKey(i, j) {
+  return i < j ? `${i}-${j}` : `${j}-${i}`;
+}
+
+function updateCooldownMap(map, dt) {
+  for (const [k, t] of map.entries()) {
+    const next = t - dt;
+    if (next <= 0) map.delete(k);
+    else map.set(k, next);
+  }
+}
+
+function getXZDistanceSq(a, b) {
+  const dx = a.x - b.x;
+  const dz = a.z - b.z;
+  return dx * dx + dz * dz;
+}
+
+function broadPhaseKartHit(posA, posB, radius = COLLISION_BROADPHASE_RADIUS) {
+  return getXZDistanceSq(posA, posB) <= radius * radius;
+}
+
+function clampSeparationPush(overlap) {
+  return Math.min(overlap, MAX_SEPARATION_PUSH);
+}
+
+function progressWrapDelta(prev, curr) {
+  let d = curr - prev;
+  if (d > 0.5) d -= 1;
+  if (d < -0.5) d += 1;
+  return d;
+}
+
+function progressNear(p, target, window = CHECKPOINT_WINDOW) {
+  const d = Math.abs(progressWrapDelta(target, p));
+  return d <= window;
+}
+
+function ensureFeedbackElements() {
+  let boostEl = document.getElementById("boostFeedback");
+  let spinEl = document.getElementById("spinFeedback");
+
+  if (!boostEl) {
+    boostEl = document.createElement("div");
+    boostEl.id = "boostFeedback";
+    boostEl.textContent = "BOOST!";
+    boostEl.style.position = "fixed";
+    boostEl.style.left = "50%";
+    boostEl.style.bottom = "90px";
+    boostEl.style.transform = "translateX(-50%)";
+    boostEl.style.padding = "8px 14px";
+    boostEl.style.borderRadius = "10px";
+    boostEl.style.fontWeight = "700";
+    boostEl.style.letterSpacing = "0.08em";
+    boostEl.style.background = "rgba(20,40,70,0.65)";
+    boostEl.style.color = "#aef4ff";
+    boostEl.style.border = "1px solid rgba(150,240,255,0.35)";
+    boostEl.style.display = "none";
+    boostEl.style.pointerEvents = "none";
+    boostEl.style.zIndex = "9999";
+    document.body.appendChild(boostEl);
+  }
+
+  if (!spinEl) {
+    spinEl = document.createElement("div");
+    spinEl.id = "spinFeedback";
+    spinEl.textContent = "SPINOUT!";
+    spinEl.style.position = "fixed";
+    spinEl.style.left = "50%";
+    spinEl.style.top = "72px";
+    spinEl.style.transform = "translateX(-50%)";
+    spinEl.style.padding = "8px 14px";
+    spinEl.style.borderRadius = "10px";
+    spinEl.style.fontWeight = "700";
+    spinEl.style.letterSpacing = "0.08em";
+    spinEl.style.background = "rgba(70,20,20,0.65)";
+    spinEl.style.color = "#ffd3d3";
+    spinEl.style.border = "1px solid rgba(255,180,180,0.35)";
+    spinEl.style.display = "none";
+    spinEl.style.pointerEvents = "none";
+    spinEl.style.zIndex = "9999";
+    document.body.appendChild(spinEl);
+  }
+
+  return { boostEl, spinEl };
+}
+
+function showBoostFeedback(duration = 0.35) {
+  boostFeedbackTimer = Math.max(boostFeedbackTimer, duration);
+}
+
+function showSpinFeedback(duration = 0.55) {
+  spinFeedbackTimer = Math.max(spinFeedbackTimer, duration);
+}
+
+function updateFeedbackUI(dt) {
+  const { boostEl, spinEl } = ensureFeedbackElements();
+
+  boostFeedbackTimer = Math.max(0, boostFeedbackTimer - dt);
+  spinFeedbackTimer = Math.max(0, spinFeedbackTimer - dt);
+
+  boostEl.style.display = boostFeedbackTimer > 0 ? "block" : "none";
+  spinEl.style.display = spinFeedbackTimer > 0 ? "block" : "none";
+
+  if (boostFeedbackTimer > 0) {
+    const a = clamp01(boostFeedbackTimer / 0.35);
+    boostEl.style.opacity = String(Math.max(0.35, a));
+    boostEl.style.transform = `translateX(-50%) scale(${1 + (1 - a) * 0.08})`;
+  } else {
+    boostEl.style.opacity = "1";
+    boostEl.style.transform = "translateX(-50%)";
+  }
+
+  if (spinFeedbackTimer > 0) {
+    const a = clamp01(spinFeedbackTimer / 0.55);
+    spinEl.style.opacity = String(Math.max(0.35, a));
+    spinEl.style.transform = `translateX(-50%) scale(${1 + (1 - a) * 0.06})`;
+  } else {
+    spinEl.style.opacity = "1";
+    spinEl.style.transform = "translateX(-50%)";
+  }
+}
+
 function resolveKartCollision(dt) {
+  // Update pairwise cooldown timers first
+  updateCooldownMap(playerAICollisionCooldown, dt);
+  updateCooldownMap(aiAICollisionCooldown, dt);
+
   // Player vs every AI kart
-  for (const ai of aiRacers) {
+  for (let aiIndex = 0; aiIndex < aiRacers.length; aiIndex++) {
+    const ai = aiRacers[aiIndex];
+
+    // Broad-phase quick reject
+    if (!broadPhaseKartHit(kart.position, ai.group.position)) continue;
+
+    const pairCd = playerAICollisionCooldown.get(aiIndex) ?? 0;
     const cornersP = getOBBCorners(kart.position, yaw, KART_HALF_W, KART_HALF_L);
     const cornersAI = getOBBCorners(ai.group.position, ai.group.rotation.y, KART_HALF_W, KART_HALF_L);
     const result = obbOverlap(cornersP, cornersAI);
-    if (result) {
-      const { overlap, nx, nz } = result;
-      const preCollisionPlayerSpeed = speed;
-      const playerForward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-      const aiForward = new THREE.Vector3(Math.sin(ai.group.rotation.y), 0, Math.cos(ai.group.rotation.y));
+    if (!result) continue;
 
-      const pVelX = playerForward.x * speed;
-      const pVelZ = playerForward.z * speed;
-      const aiVelX = aiForward.x * ai.currentSpeed;
-      const aiVelZ = aiForward.z * ai.currentSpeed;
-      const impactSpeed = Math.abs(speed) + ai.currentSpeed;
+    const { nx, nz } = result;
+    const overlap = clampSeparationPush(result.overlap);
 
-      // nx/nz points from AI -> player. Positive "playerIntoAI" means the player is driving into the AI.
-      const playerIntoAI = Math.max(0, -(pVelX * nx + pVelZ * nz));
-      const aiIntoPlayer = Math.max(0, aiVelX * nx + aiVelZ * nz);
-      const playerInitiative = THREE.MathUtils.clamp(
-        (playerIntoAI + 0.15 * Math.abs(speed)) / Math.max(0.001, playerIntoAI + aiIntoPlayer + 0.15 * impactSpeed),
-        0,
-        1
+    const preCollisionPlayerSpeed = speed;
+    const playerForward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    const aiForward = new THREE.Vector3(Math.sin(ai.group.rotation.y), 0, Math.cos(ai.group.rotation.y));
+
+    const pVelX = playerForward.x * speed;
+    const pVelZ = playerForward.z * speed;
+    const aiVelX = aiForward.x * ai.currentSpeed;
+    const aiVelZ = aiForward.z * ai.currentSpeed;
+    const impactSpeed = Math.abs(speed) + ai.currentSpeed;
+
+    // nx/nz points from AI -> player. Positive "playerIntoAI" means the player is driving into the AI.
+    const playerIntoAI = Math.max(0, -(pVelX * nx + pVelZ * nz));
+    const aiIntoPlayer = Math.max(0, aiVelX * nx + aiVelZ * nz);
+    const playerInitiative = THREE.MathUtils.clamp(
+      (playerIntoAI + 0.15 * Math.abs(speed)) / Math.max(0.001, playerIntoAI + aiIntoPlayer + 0.15 * impactSpeed),
+      0,
+      1
+    );
+
+    const headingDot = THREE.MathUtils.clamp(playerForward.dot(aiForward), -1, 1);
+    const headingOpposition = (1 - headingDot) * 0.5; // 0 = same direction, 1 = head-on
+    const sideImpact = THREE.MathUtils.clamp(1 - Math.abs(playerForward.x * nx + playerForward.z * nz), 0, 1);
+    const torqueSign = Math.sign(playerForward.x * nz - playerForward.z * nx) || randomSign();
+    const impactScale = THREE.MathUtils.clamp(impactSpeed / 18, 0, 1);
+
+    // Bias separation so the struck AI gets displaced more than the player.
+    const playerPushShare = THREE.MathUtils.clamp(0.38 - 0.22 * playerInitiative, 0.12, 0.4);
+    const aiPushShare = 1 - playerPushShare;
+
+    kart.position.x += nx * overlap * playerPushShare;
+    kart.position.z += nz * overlap * playerPushShare;
+    ai.group.position.x -= nx * overlap * aiPushShare;
+    ai.group.position.z -= nz * overlap * aiPushShare;
+
+    // A small forward shove helps "ramming" feel directional.
+    const ramShove = Math.min(0.28, playerIntoAI * 0.018);
+    if (ramShove > 0) {
+      ai.group.position.addScaledVector(playerForward, ramShove);
+    }
+
+    // Small forward carry-through helps prevent the player from "sticking" on initiated hits.
+    const playerCarryNudge = Math.min(0.12, playerIntoAI * 0.007);
+    if (playerCarryNudge > 0 && preCollisionPlayerSpeed > 0) {
+      kart.position.addScaledVector(playerForward, playerCarryNudge);
+    }
+
+    // Directional yaw disturbance
+    const aiYawKick =
+      torqueSign *
+      (0.06 + 0.22 * sideImpact + 0.08 * headingOpposition) *
+      (0.55 + 0.85 * impactScale) *
+      (0.6 + 0.9 * playerInitiative);
+    ai.group.rotation.y += aiYawKick;
+
+    const playerYawKick = -torqueSign * Math.abs(aiYawKick) * (0.12 + 0.14 * (1 - playerInitiative));
+    yaw += playerYawKick;
+    kart.rotation.y = yaw;
+
+    // Speed retention
+    const playerRetain = THREE.MathUtils.clamp(
+      0.93 - 0.12 * impactScale - 0.18 * (1 - playerInitiative) - 0.05 * headingOpposition,
+      0.58,
+      0.96
+    );
+    const aiRetain = THREE.MathUtils.clamp(
+      0.42 - 0.14 * impactScale - 0.16 * playerInitiative - 0.06 * sideImpact,
+      0.12,
+      0.55
+    );
+    speed *= playerRetain;
+    ai.currentSpeed *= aiRetain;
+
+    // Preserve some player carry when player initiated contact
+    if (preCollisionPlayerSpeed > 0 && playerInitiative > 0.55 && !playerSpinning) {
+      const carryFloorFactor = THREE.MathUtils.clamp(
+        0.42 + 0.22 * playerInitiative - 0.16 * headingOpposition - 0.14 * sideImpact,
+        0.22,
+        0.72
       );
+      const carryFloorSpeed = preCollisionPlayerSpeed * carryFloorFactor;
+      speed = Math.max(speed, carryFloorSpeed);
+    }
 
-      const headingDot = THREE.MathUtils.clamp(playerForward.dot(aiForward), -1, 1);
-      const headingOpposition = (1 - headingDot) * 0.5; // 0 = same direction, 1 = head-on
-      const sideImpact = THREE.MathUtils.clamp(1 - Math.abs(playerForward.x * nx + playerForward.z * nz), 0, 1);
-      const torqueSign = Math.sign(playerForward.x * nz - playerForward.z * nx) || randomSign();
-      const impactScale = THREE.MathUtils.clamp(impactSpeed / 18, 0, 1);
+    // Apply spin triggers with cooldown to prevent repeated frame-by-frame retrigger
+    const canRetrigger = pairCd <= 0 && impactSpeed > MIN_COLLISION_RETRIGGER_SPEED;
 
-      // Bias separation so the struck AI gets displaced more than the player.
-      const playerPushShare = THREE.MathUtils.clamp(0.38 - 0.22 * playerInitiative, 0.12, 0.4);
-      const aiPushShare = 1 - playerPushShare;
-      kart.position.x += nx * overlap * playerPushShare;
-      kart.position.z += nz * overlap * playerPushShare;
-      ai.group.position.x -= nx * overlap * aiPushShare;
-      ai.group.position.z -= nz * overlap * aiPushShare;
-
-      // A small forward shove helps "ramming" feel directional.
-      const ramShove = Math.min(0.28, playerIntoAI * 0.018);
-      if (ramShove > 0) {
-        ai.group.position.addScaledVector(playerForward, ramShove);
-      }
-      // Small forward carry-through helps prevent the player from "sticking" on initiated hits.
-      const playerCarryNudge = Math.min(0.12, playerIntoAI * 0.007);
-      if (playerCarryNudge > 0 && preCollisionPlayerSpeed > 0) {
-        kart.position.addScaledVector(playerForward, playerCarryNudge);
-      }
-
-      // Directional yaw disturbance: AI gets a much larger heading disruption than the player.
-      const aiYawKick =
-        torqueSign *
-        (0.06 + 0.22 * sideImpact + 0.08 * headingOpposition) *
-        (0.55 + 0.85 * impactScale) *
-        (0.6 + 0.9 * playerInitiative);
-      ai.group.rotation.y += aiYawKick;
-
-      const playerYawKick = -torqueSign * Math.abs(aiYawKick) * (0.12 + 0.14 * (1 - playerInitiative));
-      yaw += playerYawKick;
-      kart.rotation.y = yaw;
-
-      // Keep player mostly in control while heavily penalizing the struck AI.
-      const playerRetain = THREE.MathUtils.clamp(
-        0.93 - 0.12 * impactScale - 0.18 * (1 - playerInitiative) - 0.05 * headingOpposition,
-        0.58,
-        0.96
-      );
-      const aiRetain = THREE.MathUtils.clamp(
-        0.42 - 0.14 * impactScale - 0.16 * playerInitiative - 0.06 * sideImpact,
-        0.12,
-        0.55
-      );
-      speed *= playerRetain;
-      ai.currentSpeed *= aiRetain;
-
-      // If the player initiated the contact, preserve some forward carry so they don't unrealistically stall.
-      if (preCollisionPlayerSpeed > 0 && playerInitiative > 0.55 && !playerSpinning) {
-        const carryFloorFactor = THREE.MathUtils.clamp(
-          0.42 + 0.22 * playerInitiative - 0.16 * headingOpposition - 0.14 * sideImpact,
-          0.22,
-          0.72
-        );
-        const carryFloorSpeed = preCollisionPlayerSpeed * carryFloorFactor;
-        speed = Math.max(speed, carryFloorSpeed);
-      }
-
-      // AI spins out much more easily when the player initiates contact; player only spins on severe impacts.
+    if (canRetrigger) {
       const aiSpinThreshold = 4.8 - 1.7 * playerInitiative - 0.9 * sideImpact;
       if (impactSpeed > aiSpinThreshold && !ai.spinning) {
         ai.spinning = true;
@@ -2567,37 +2813,55 @@ function resolveKartCollision(dt) {
           -torqueSign *
           (1.4 + impactSpeed * 0.075) *
           (0.45 + 0.45 * (1 - playerInitiative));
+        showSpinFeedback();
       }
+
+      playerAICollisionCooldown.set(aiIndex, COLLISION_PAIR_COOLDOWN);
     }
   }
 
   // AI vs AI kart collision
   for (let i = 0; i < aiRacers.length; i++) {
     for (let j = i + 1; j < aiRacers.length; j++) {
-      const a = aiRacers[i], b = aiRacers[j];
+      const a = aiRacers[i];
+      const b = aiRacers[j];
+
+      // Broad-phase quick reject
+      if (!broadPhaseKartHit(a.group.position, b.group.position)) continue;
+
+      const key = pairKey(i, j);
+      const pairCd = aiAICollisionCooldown.get(key) ?? 0;
+
       const cA = getOBBCorners(a.group.position, a.group.rotation.y, KART_HALF_W, KART_HALF_L);
       const cB = getOBBCorners(b.group.position, b.group.rotation.y, KART_HALF_W, KART_HALF_L);
       const res = obbOverlap(cA, cB);
-      if (res) {
-        a.group.position.x += res.nx * res.overlap * 0.5;
-        a.group.position.z += res.nz * res.overlap * 0.5;
-        b.group.position.x -= res.nx * res.overlap * 0.5;
-        b.group.position.z -= res.nz * res.overlap * 0.5;
+      if (!res) continue;
 
-        const impactSpeed = a.currentSpeed + b.currentSpeed;
-        if (impactSpeed > 4) {
-          if (!a.spinning) {
-            a.spinning = true;
-            a.spinVel = randomSign() * (3 + impactSpeed * 0.15);
-          }
-          if (!b.spinning) {
-            b.spinning = true;
-            b.spinVel = randomSign() * (3 + impactSpeed * 0.15);
-          }
+      const overlap = clampSeparationPush(res.overlap);
+
+      a.group.position.x += res.nx * overlap * 0.5;
+      a.group.position.z += res.nz * overlap * 0.5;
+      b.group.position.x -= res.nx * overlap * 0.5;
+      b.group.position.z -= res.nz * overlap * 0.5;
+
+      // If on cooldown, only do mild separation (stability) but skip harsh re-trigger effects
+      if (pairCd > 0) continue;
+
+      const impactSpeed = a.currentSpeed + b.currentSpeed;
+      if (impactSpeed > 4) {
+        if (!a.spinning) {
+          a.spinning = true;
+          a.spinVel = randomSign() * (3 + impactSpeed * 0.15);
         }
-        a.currentSpeed *= 0.3;
-        b.currentSpeed *= 0.3;
+        if (!b.spinning) {
+          b.spinning = true;
+          b.spinVel = randomSign() * (3 + impactSpeed * 0.15);
+        }
       }
+      a.currentSpeed *= 0.3;
+      b.currentSpeed *= 0.3;
+
+      aiAICollisionCooldown.set(key, COLLISION_PAIR_COOLDOWN);
     }
   }
 }
@@ -2610,6 +2874,8 @@ function updatePhysics(dt) {
 
   //Handle spinout
   if (playerSpinning) {
+    showSpinFeedback(0.15);
+
     // Decelerate
     speed *= Math.max(0, 1 - 4 * dt);
 
@@ -2731,6 +2997,9 @@ function updateCustomizationPreview(dt) {
 
   camera.position.set(target.x + x, target.y + y + 0.5, target.z + z);
   camera.lookAt(target.x, target.y + 0.15, target.z);
+
+  camera.fov += (60 - camera.fov) * Math.min(1, CAMERA_FOV_LERP_SPEED * dt);
+  camera.updateProjectionMatrix();
 }
 
 function updateCamera(dt) {
@@ -2750,15 +3019,30 @@ function updateCamera(dt) {
 
   const finalYaw = orbitYaw + manualYawOffset;
 
-  const target = new THREE.Vector3().copy(kart.position);
-  target.y += 1.25;
+  // Smoothed camera target for nicer motion
+  const rawTarget = new THREE.Vector3().copy(kart.position);
+  rawTarget.y += 1.25;
+
+  if (!cameraTargetSmoothed.lengthSq()) {
+    cameraTargetSmoothed.copy(rawTarget);
+  } else {
+    const a = Math.min(1, CAMERA_TARGET_LERP_SPEED * dt);
+    cameraTargetSmoothed.lerp(rawTarget, a);
+  }
 
   const x = orbitDistance * Math.cos(orbitPitch) * Math.sin(finalYaw);
   const y = orbitDistance * Math.sin(orbitPitch);
   const z = orbitDistance * Math.cos(orbitPitch) * Math.cos(finalYaw);
 
-  camera.position.set(target.x + x, target.y + y, target.z + z);
-  camera.lookAt(target);
+  camera.position.set(cameraTargetSmoothed.x + x, cameraTargetSmoothed.y + y, cameraTargetSmoothed.z + z);
+  camera.lookAt(cameraTargetSmoothed);
+
+  // Dynamic FOV: slight zoom-out at high speed / boost
+  const speedFrac = clamp01(Math.abs(speed) / MAX_SPEED);
+  const boostFrac = playerBoostTimer > 0 ? 1 : 0;
+  const targetFov = 60 + speedFrac * CAMERA_SPEED_FOV_BONUS + boostFrac * CAMERA_BOOST_FOV_BONUS;
+  camera.fov += (targetFov - camera.fov) * Math.min(1, CAMERA_FOV_LERP_SPEED * dt);
+  camera.updateProjectionMatrix();
 }
 
 function animate() {
@@ -2775,6 +3059,7 @@ function animate() {
     updateCamera(dt);
   }
   updateRaceHud(dt);
+  updateFeedbackUI(dt);
 
   // Keep shadow light centred on the kart so the tight frustum always covers it
   if (!customizationActive) {
@@ -2785,6 +3070,7 @@ function animate() {
 
   renderer.render(customizationActive ? menuScene : scene, camera);
 }
+ensureFeedbackElements();
 animate();
 
 // Resize
