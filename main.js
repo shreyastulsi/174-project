@@ -619,6 +619,12 @@ function addBoostPads(track, placements) {
   return { pads, group: padGroup };
 }
 
+function rampRiseProfile(unitT) {
+  const t = THREE.MathUtils.clamp(unitT, 0, 1);
+  // One-way ramp profile: gradual start, steeper lip for stronger takeoff.
+  return Math.pow(t, 1.9);
+}
+
 function createRampSurfaceGeometry(width, length, peakHeight, lengthSegments = 28) {
   const halfW = width * 0.5;
   const halfL = length * 0.5;
@@ -629,8 +635,7 @@ function createRampSurfaceGeometry(width, length, peakHeight, lengthSegments = 2
   for (let i = 0; i <= lengthSegments; i++) {
     const v = i / lengthSegments;
     const z = THREE.MathUtils.lerp(-halfL, halfL, v);
-    const normalized = z / halfL; // [-1, 1]
-    const profile = Math.max(0, Math.cos(normalized * Math.PI * 0.5));
+    const profile = rampRiseProfile(v);
     const y = peakHeight * profile;
 
     positions.push(-halfW, y, z);
@@ -814,12 +819,36 @@ const trackRamps = rampSystem.ramps;
 
 const SURFACE_SLOPE_SAMPLE_DIST = 1.2;
 const MAX_SURFACE_PITCH = 0.36;
+const RAMP_SPEED_BOOST_ACCEL = 11.5;
+const RAMP_SPEED_BOOST_MAX_MULT = 1.24;
+const RAMP_SPEED_BOOST_MIN_SPEED_FACTOR = 0.9;
+const AI_RAMP_SPEED_ACCEL_MULT = 0.82;
+const AI_RAMP_SPEED_MAX_MULT = 1.18;
+const RAMP_LAUNCH_MIN_HEIGHT = 0.36;
+const RAMP_LAUNCH_EXIT_MIN_NORM = 0.72;
+const RAMP_LAUNCH_MIN_DESCENT_PITCH = 0.035;
+const RAMP_LAUNCH_MIN_SPEED = 6.8;
+const RAMP_LAUNCH_MIN_ALIGN_DOT = 0.35;
+const RAMP_LAUNCH_BASE_VY = 3.4;
+const RAMP_LAUNCH_PITCH_BONUS_VY = 3.9;
+const RAMP_LAUNCH_SPEED_BONUS_VY = 2.5;
+const RAMP_LAUNCH_LIP_BONUS_VY = 1.2;
+const RAMP_AIR_GRAVITY = 18.2;
+const RAMP_AIR_PITCH_FROM_VY = 0.047;
+const RAMP_AIR_MAX_PITCH = 0.4;
+const RAMP_AIR_PITCH_LERP = 8.5;
+const AI_RAMP_LAUNCH_MULT = 0.9;
 const surfaceForwardProbe = new THREE.Vector3();
 const surfacePosProbe = new THREE.Vector3();
+const launchDirProbe = new THREE.Vector3();
 const defaultSurfacePose = { y: 0, pitch: 0 };
+const rampContactProbe = { height: 0, ramp: null, localF: 0, localL: 0, normalizedF: 0 };
 
-function getRampHeightAtPosition(pos) {
+function sampleRampContactAtPosition(pos, out = rampContactProbe) {
   let bestHeight = 0;
+  let bestRamp = null;
+  let bestLocalF = 0;
+  let bestLocalL = 0;
 
   for (const ramp of trackRamps) {
     const dx = pos.x - ramp.center.x;
@@ -828,13 +857,34 @@ function getRampHeightAtPosition(pos) {
     const localF = dx * ramp.tangent.x + dz * ramp.tangent.z;
     if (Math.abs(localL) > ramp.halfW || Math.abs(localF) > ramp.halfL) continue;
 
-    const normalized = localF / ramp.halfL; // [-1, 1]
-    const profile = Math.max(0, Math.cos(normalized * Math.PI * 0.5));
+    const unitT = (localF + ramp.halfL) / (ramp.halfL * 2); // [0, 1] across ramp length
+    const profile = rampRiseProfile(unitT);
     const height = ramp.peakHeight * profile;
-    if (height > bestHeight) bestHeight = height;
+    if (height > bestHeight) {
+      bestHeight = height;
+      bestRamp = ramp;
+      bestLocalF = localF;
+      bestLocalL = localL;
+    }
   }
 
-  return bestHeight;
+  out.height = bestHeight;
+  out.ramp = bestRamp;
+  out.localF = bestLocalF;
+  out.localL = bestLocalL;
+  out.normalizedF = bestRamp ? (bestLocalF + bestRamp.halfL) / (bestRamp.halfL * 2) : 0;
+  return out;
+}
+
+function getRampHeightAtPosition(pos) {
+  return sampleRampContactAtPosition(pos).height;
+}
+
+function getRampBoostFactorAtPosition(pos) {
+  const contact = sampleRampContactAtPosition(pos);
+  if (!contact.ramp) return 0;
+  const t = THREE.MathUtils.clamp(contact.normalizedF, 0, 1);
+  return 0.35 + 0.65 * Math.pow(t, 0.7);
 }
 
 function sampleTrackSurfacePose(pos, headingYaw, out = defaultSurfacePose) {
@@ -857,6 +907,77 @@ function applyKartToTrackSurface(kartGroup, headingYaw) {
   const pose = sampleTrackSurfacePose(kartGroup.position, headingYaw);
   kartGroup.position.y = pose.y;
   kartGroup.rotation.x = pose.pitch;
+}
+
+function updateKartAirborneState(kartGroup, headingYaw, forwardSpeed, state, dt, launchMult = 1) {
+  const pose = sampleTrackSurfacePose(kartGroup.position, headingYaw);
+  const rampContact = sampleRampContactAtPosition(kartGroup.position);
+  const onRamp = rampContact.ramp !== null;
+
+  if (!onRamp) {
+    state.lastLaunchedRampId = -1;
+  }
+
+  if (!state.airborne) {
+    kartGroup.position.y = pose.y;
+    kartGroup.rotation.x = pose.pitch;
+
+    const canLaunchThisRamp = onRamp && state.lastLaunchedRampId !== rampContact.ramp.id;
+    launchDirProbe.set(Math.sin(headingYaw), 0, Math.cos(headingYaw));
+    const rampAlign = onRamp ? launchDirProbe.dot(rampContact.ramp.tangent) : 0;
+    const alignedForward = rampAlign > RAMP_LAUNCH_MIN_ALIGN_DOT;
+    const descending = pose.pitch < -RAMP_LAUNCH_MIN_DESCENT_PITCH;
+    const nearRampExit = rampContact.normalizedF > RAMP_LAUNCH_EXIT_MIN_NORM;
+    const enoughHeight = rampContact.height > RAMP_LAUNCH_MIN_HEIGHT;
+    const enoughSpeed = Math.abs(forwardSpeed) > RAMP_LAUNCH_MIN_SPEED;
+
+    if (canLaunchThisRamp && alignedForward && descending && nearRampExit && enoughHeight && enoughSpeed) {
+      const pitchFactor = THREE.MathUtils.clamp(
+        (-pose.pitch - RAMP_LAUNCH_MIN_DESCENT_PITCH) / 0.22,
+        0,
+        1
+      );
+      const speedFactor = THREE.MathUtils.clamp(
+        (Math.abs(forwardSpeed) - RAMP_LAUNCH_MIN_SPEED) / 14.5,
+        0,
+        1
+      );
+      const lipFactor = THREE.MathUtils.clamp(
+        (rampContact.normalizedF - RAMP_LAUNCH_EXIT_MIN_NORM) / (1 - RAMP_LAUNCH_EXIT_MIN_NORM),
+        0,
+        1
+      );
+      const launchVy =
+        (RAMP_LAUNCH_BASE_VY +
+          RAMP_LAUNCH_PITCH_BONUS_VY * pitchFactor +
+          RAMP_LAUNCH_SPEED_BONUS_VY * speedFactor +
+          RAMP_LAUNCH_LIP_BONUS_VY * lipFactor) *
+        launchMult;
+
+      state.verticalVel = Math.max(state.verticalVel, launchVy);
+      state.airborne = true;
+      state.lastLaunchedRampId = rampContact.ramp.id;
+      kartGroup.position.y += 0.05;
+    }
+    return;
+  }
+
+  state.verticalVel -= RAMP_AIR_GRAVITY * dt;
+  kartGroup.position.y += state.verticalVel * dt;
+
+  const airPitch = THREE.MathUtils.clamp(
+    state.verticalVel * RAMP_AIR_PITCH_FROM_VY,
+    -RAMP_AIR_MAX_PITCH,
+    RAMP_AIR_MAX_PITCH
+  );
+  kartGroup.rotation.x += (airPitch - kartGroup.rotation.x) * Math.min(1, RAMP_AIR_PITCH_LERP * dt);
+
+  if (kartGroup.position.y <= pose.y) {
+    kartGroup.position.y = pose.y;
+    kartGroup.rotation.x = pose.pitch;
+    state.airborne = false;
+    state.verticalVel = 0;
+  }
 }
 
 // ==============================
@@ -1810,6 +1931,10 @@ for (let aiIndex = 0; aiIndex < AI_PROFILES.length; aiIndex++) {
     // Recovery state after spinout
     recoveryTimer: 0,
     recoveryLateralBlendBoost: 0,
+    // Airborne state
+    airborne: false,
+    verticalVel: 0,
+    lastLaunchedRampId: -1,
   });
 }
 
@@ -1913,21 +2038,32 @@ function updateAllAI(dt) {
       // Still spin wheels
       const spin = ai.currentSpeed * dt * 1.5;
       for (const w of ai.wheels) w.rotation.x += spin;
-      applyKartToTrackSurface(ai.group, ai.group.rotation.y);
+      updateKartAirborneState(ai.group, ai.group.rotation.y, ai.currentSpeed, ai, dt, AI_RAMP_LAUNCH_MULT);
       continue;  // skip normal AI driving while spinning
     }
 
     // --- Normal driving / recovery driving ---
     const recovering = ai.recoveryTimer > 0;
     const recoveryAlpha = clamp01(ai.recoveryTimer / AI_RECOVERY_DURATION);
+    const aiRampBoostFactor = ai.airborne ? 0 : getRampBoostFactorAtPosition(ai.group.position);
 
     const aiBoosted = ai.boostTimer > 0;
-    const aiTargetMaxSpeedBase = ai.maxSpeed * (aiBoosted ? (BOOST_MAX_MULT - 0.03) : 1);
+    const aiRampMaxMult = aiRampBoostFactor > 0
+      ? (1 + (AI_RAMP_SPEED_MAX_MULT - 1) * aiRampBoostFactor)
+      : 1;
+    const aiTargetMaxSpeedBase = ai.maxSpeed * (aiBoosted ? (BOOST_MAX_MULT - 0.03) : 1) * aiRampMaxMult;
     const aiTargetMaxSpeed = recovering ? aiTargetMaxSpeedBase * AI_RECOVERY_SPEED_MULT : aiTargetMaxSpeedBase;
 
     const AI_ACCEL = ACCEL;
     const aiAccelBonus = aiBoosted ? BOOST_ACCEL_BONUS * 0.7 : 0;
-    ai.currentSpeed = Math.min(aiTargetMaxSpeed, ai.currentSpeed + (AI_ACCEL + aiAccelBonus) * dt);
+    const aiRampAccelBonus = aiRampBoostFactor > 0
+      ? RAMP_SPEED_BOOST_ACCEL * AI_RAMP_SPEED_ACCEL_MULT * aiRampBoostFactor
+      : 0;
+    ai.currentSpeed = Math.min(aiTargetMaxSpeed, ai.currentSpeed + (AI_ACCEL + aiAccelBonus + aiRampAccelBonus) * dt);
+    if (aiRampBoostFactor > 0) {
+      const rampFloorSpeed = ai.maxSpeed * (RAMP_SPEED_BOOST_MIN_SPEED_FACTOR + 0.08 * aiRampBoostFactor);
+      ai.currentSpeed = Math.max(ai.currentSpeed, rampFloorSpeed);
+    }
 
     // Gradually blend from current lateral toward preferred racing line
     const baseBlendSpeed = 0.3;
@@ -1963,9 +2099,11 @@ function updateAllAI(dt) {
     // Orient along the track tangent for a clean heading
     const aiYaw = Math.atan2(tan.x, tan.z);
     const lerpRate = recovering ? ai.lerpRate * AI_RECOVERY_LERP_MULT : ai.lerpRate;
+    const prevY = ai.group.position.y;
     ai.group.position.lerp(curPos, lerpRate * dt);
+    ai.group.position.y = prevY;
     ai.group.rotation.y = aiYaw;
-    applyKartToTrackSurface(ai.group, aiYaw);
+    updateKartAirborneState(ai.group, aiYaw, ai.currentSpeed, ai, dt, AI_RAMP_LAUNCH_MULT);
 
     // Spin wheels
     const spin = ai.currentSpeed * dt * 1.5;
@@ -2402,6 +2540,11 @@ let playerLap = 1;
 let playerPrevProgress = START_T;
 let playerLapElapsed = 0;
 let bestLapTimeSec = Infinity;
+const playerAirState = {
+  airborne: false,
+  verticalVel: 0,
+  lastLaunchedRampId: -1,
+};
 
 function updatePauseUI() {
   if (pauseBannerEl) {
@@ -2447,6 +2590,9 @@ function resetPlayerRaceState() {
   playerPrevProgress = START_T;
   playerLapElapsed = 0;
   playerPassedCheckpoint = false;
+  playerAirState.airborne = false;
+  playerAirState.verticalVel = 0;
+  playerAirState.lastLaunchedRampId = -1;
 
   steering.rotation.y = 0;
   for (const w of wheels) w.rotation.x = 0;
@@ -2477,6 +2623,9 @@ function resetAIRaceState() {
     ai.passedCheckpoint = false;
     ai.recoveryTimer = 0;
     ai.recoveryLateralBlendBoost = 0;
+    ai.airborne = false;
+    ai.verticalVel = 0;
+    ai.lastLaunchedRampId = -1;
 
     for (const w of ai.wheels) w.rotation.x = 0;
   }
@@ -2645,7 +2794,9 @@ function resolveTrackCollision() {
     kart.position.addScaledVector(left, -sign * over);
     speed *= 0.92;
   }
-  applyKartToTrackSurface(kart, yaw);
+  if (!playerAirState.airborne) {
+    applyKartToTrackSurface(kart, yaw);
+  }
 }
 
 // Kart-to-kart collision  
@@ -3075,10 +3226,14 @@ function resolveKartCollision(dt) {
     }
   }
 
-  // Ensure all karts stay snapped to ramp height after collision pushes.
-  applyKartToTrackSurface(kart, yaw);
+  // Keep grounded karts snapped to ramp height after collision pushes.
+  if (!playerAirState.airborne) {
+    applyKartToTrackSurface(kart, yaw);
+  }
   for (const ai of aiRacers) {
-    applyKartToTrackSurface(ai.group, ai.group.rotation.y);
+    if (!ai.airborne) {
+      applyKartToTrackSurface(ai.group, ai.group.rotation.y);
+    }
   }
 }
 
@@ -3115,6 +3270,7 @@ function updatePhysics(dt) {
     resolveTrackCollision();
     resolveKartCollision(dt);
     checkPlayerBoostPads();
+    updateKartAirborneState(kart, yaw, speed, playerAirState, dt);
     if (speedEl) speedEl.textContent = speed.toFixed(1);
     return;
   }
@@ -3155,7 +3311,17 @@ function updatePhysics(dt) {
     speed = sign * Math.max(0, mag - dragNow * dt);
   }
 
-  const playerMaxForwardSpeed = MAX_SPEED * (playerBoosted ? BOOST_MAX_MULT : 1);
+  const playerRampBoostFactor = playerAirState.airborne ? 0 : getRampBoostFactorAtPosition(kart.position);
+  if (playerRampBoostFactor > 0 && speed >= 0) {
+    speed += RAMP_SPEED_BOOST_ACCEL * playerRampBoostFactor * dt;
+    const rampFloorSpeed = MAX_SPEED * (RAMP_SPEED_BOOST_MIN_SPEED_FACTOR + 0.11 * playerRampBoostFactor);
+    speed = Math.max(speed, rampFloorSpeed);
+  }
+
+  const rampMaxMult = playerRampBoostFactor > 0
+    ? (1 + (RAMP_SPEED_BOOST_MAX_MULT - 1) * playerRampBoostFactor)
+    : 1;
+  const playerMaxForwardSpeed = MAX_SPEED * (playerBoosted ? BOOST_MAX_MULT : 1) * rampMaxMult;
   speed = Math.max(-MAX_SPEED * 0.35, Math.min(playerMaxForwardSpeed, speed));
 
   // Turning
@@ -3183,6 +3349,7 @@ function updatePhysics(dt) {
   resolveTrackCollision();
   resolveKartCollision(dt);
   checkPlayerBoostPads();
+  updateKartAirborneState(kart, yaw, speed, playerAirState, dt);
 
   if (speedEl) speedEl.textContent = speed.toFixed(1);
 }
