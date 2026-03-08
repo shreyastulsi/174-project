@@ -234,6 +234,66 @@ function makeBoostPadTexture() {
   return tex;
 }
 
+function hexToRgbaCss(hex, alpha = 1) {
+  const c = new THREE.Color(hex);
+  const r = Math.round(c.r * 255);
+  const g = Math.round(c.g * 255);
+  const b = Math.round(c.b * 255);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function makeRampSpeedTexture(primaryHex, accentHex, laneHex) {
+  const c = document.createElement("canvas");
+  c.width = 384;
+  c.height = 1024;
+  const ctx = c.getContext("2d");
+
+  ctx.clearRect(0, 0, c.width, c.height);
+
+  const laneGrad = ctx.createLinearGradient(0, 0, c.width, 0);
+  laneGrad.addColorStop(0, "rgba(0,0,0,0)");
+  laneGrad.addColorStop(0.16, hexToRgbaCss(laneHex, 0.26));
+  laneGrad.addColorStop(0.38, hexToRgbaCss(primaryHex, 0.72));
+  laneGrad.addColorStop(0.62, hexToRgbaCss(primaryHex, 0.72));
+  laneGrad.addColorStop(0.84, hexToRgbaCss(laneHex, 0.26));
+  laneGrad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = laneGrad;
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  ctx.fillStyle = hexToRgbaCss(laneHex, 0.58);
+  ctx.fillRect(62, 0, 14, c.height);
+  ctx.fillRect(c.width - 76, 0, 14, c.height);
+
+  for (let y = 36; y < c.height + 100; y += 120) {
+    ctx.fillStyle = hexToRgbaCss(accentHex, 0.9);
+    ctx.beginPath();
+    ctx.moveTo(c.width * 0.5, y + 82);
+    ctx.lineTo(c.width * 0.5 - 92, y);
+    ctx.lineTo(c.width * 0.5 - 46, y);
+    ctx.lineTo(c.width * 0.5, y + 42);
+    ctx.lineTo(c.width * 0.5 + 46, y);
+    ctx.lineTo(c.width * 0.5 + 92, y);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.strokeStyle = hexToRgbaCss(0xffffff, 0.72);
+  ctx.lineWidth = 3;
+  for (let y = -30; y < c.height + 80; y += 120) {
+    ctx.beginPath();
+    ctx.moveTo(c.width * 0.5, y + 90);
+    ctx.lineTo(c.width * 0.5 - 72, y + 18);
+    ctx.moveTo(c.width * 0.5, y + 90);
+    ctx.lineTo(c.width * 0.5 + 72, y + 18);
+    ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(8, MAX_ANISO || 8);
+  return tex;
+}
+
 const grassTex = loadRepeatTexture("./assets/textures/grass.svg", { repeat: [14, 14] });
 const asphaltTex = loadRepeatTexture("./assets/textures/asphalt.svg", { repeat: [4, 32] });
 const curbTex = loadRepeatTexture("./assets/textures/curb_stripe.svg", { repeat: [1, 32] });
@@ -664,6 +724,12 @@ function createRampSurfaceGeometry(width, length, peakHeight, lengthSegments = 2
 function addTrackRamps(track, placements) {
   const group = new THREE.Group();
   const ramps = [];
+  const rampAccentStyles = [
+    { primary: 0x6af5ff, accent: 0xffdf63, lane: 0xe8fbff, glow: 0x53daff },
+    { primary: 0xff7f63, accent: 0xffe39d, lane: 0xfff1e2, glow: 0xff976f },
+    { primary: 0xff66d3, accent: 0x8ed8ff, lane: 0xfbe3ff, glow: 0xd471ff },
+    { primary: 0x7bff7f, accent: 0x5effd7, lane: 0xe9ffe6, glow: 0x6affb4 },
+  ];
   const mat = new THREE.MeshStandardMaterial({
     map: asphaltTex,
     color: 0xd8dde5,
@@ -699,6 +765,49 @@ function addTrackRamps(track, placements) {
     mesh.receiveShadow = true;
     mesh.renderOrder = 7;
     group.add(mesh);
+
+    const accent = rampAccentStyles[i % rampAccentStyles.length];
+    const speedTex = makeRampSpeedTexture(accent.primary, accent.accent, accent.lane);
+
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: accent.glow,
+      transparent: true,
+      opacity: 0.24,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    glowMat.toneMapped = false;
+
+    const glowMesh = new THREE.Mesh(
+      createRampSurfaceGeometry(width * 1.03, length * 1.02, peakHeight + 0.015, placement.segments ?? 28),
+      glowMat
+    );
+    glowMesh.position.set(center.x, track.roadY + 0.008, center.z);
+    glowMesh.rotation.y = yaw;
+    glowMesh.castShadow = false;
+    glowMesh.receiveShadow = false;
+    glowMesh.renderOrder = 6;
+    group.add(glowMesh);
+
+    const speedMat = new THREE.MeshBasicMaterial({
+      map: speedTex,
+      transparent: true,
+      opacity: 0.98,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    speedMat.toneMapped = false;
+
+    const speedMesh = new THREE.Mesh(
+      createRampSurfaceGeometry(width * 0.8, length * 0.92, peakHeight + 0.03, placement.segments ?? 28),
+      speedMat
+    );
+    speedMesh.position.set(center.x, track.roadY + 0.024, center.z);
+    speedMesh.rotation.y = yaw;
+    speedMesh.castShadow = false;
+    speedMesh.receiveShadow = false;
+    speedMesh.renderOrder = 9;
+    group.add(speedMesh);
 
     ramps.push({
       id: i,
