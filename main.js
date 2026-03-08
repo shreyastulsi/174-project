@@ -619,6 +619,98 @@ function addBoostPads(track, placements) {
   return { pads, group: padGroup };
 }
 
+function createRampSurfaceGeometry(width, length, peakHeight, lengthSegments = 28) {
+  const halfW = width * 0.5;
+  const halfL = length * 0.5;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let i = 0; i <= lengthSegments; i++) {
+    const v = i / lengthSegments;
+    const z = THREE.MathUtils.lerp(-halfL, halfL, v);
+    const normalized = z / halfL; // [-1, 1]
+    const profile = Math.max(0, Math.cos(normalized * Math.PI * 0.5));
+    const y = peakHeight * profile;
+
+    positions.push(-halfW, y, z);
+    positions.push(halfW, y, z);
+
+    uvs.push(0, v);
+    uvs.push(1, v);
+  }
+
+  for (let i = 0; i < lengthSegments; i++) {
+    const i0 = 2 * i;
+    const i1 = i0 + 1;
+    const i2 = i0 + 2;
+    const i3 = i0 + 3;
+    indices.push(i0, i2, i1, i2, i3, i1);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function addTrackRamps(track, placements) {
+  const group = new THREE.Group();
+  const ramps = [];
+  const mat = new THREE.MeshStandardMaterial({
+    map: asphaltTex,
+    color: 0xd8dde5,
+    roughness: 0.72,
+    metalness: 0.02,
+    polygonOffset: true,
+    polygonOffsetFactor: -6,
+    polygonOffsetUnits: -6,
+  });
+
+  for (let i = 0; i < placements.length; i++) {
+    const placement = placements[i];
+    const idx = ((placement.idx % track.segments) + track.segments) % track.segments;
+    const center = track.samplePts[idx].clone();
+    const baseTangent = track.sampleTan[idx].clone().normalize();
+    const baseLeft = track.sampleLeft[idx].clone().normalize();
+    center.addScaledVector(baseLeft, placement.lateral ?? 0);
+
+    const width = placement.width ?? 12;
+    const length = placement.length ?? 22;
+    const peakHeight = placement.height ?? 1.8;
+    const yaw = Math.atan2(baseTangent.x, baseTangent.z) + (placement.yawOffset ?? 0);
+    const tangent = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)).normalize();
+    const left = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
+
+    const mesh = new THREE.Mesh(
+      createRampSurfaceGeometry(width, length, peakHeight, placement.segments ?? 28),
+      mat
+    );
+    mesh.position.set(center.x, track.roadY + 0.012, center.z);
+    mesh.rotation.y = yaw;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.renderOrder = 7;
+    group.add(mesh);
+
+    ramps.push({
+      id: i,
+      mesh,
+      center: center.clone(),
+      tangent,
+      left,
+      halfW: width * 0.5,
+      halfL: length * 0.5,
+      peakHeight,
+    });
+  }
+
+  scene.add(group);
+  return { ramps, group, material: mat };
+}
+
 // ==============================
 // Track layout:
 // 1) long straight
@@ -711,6 +803,61 @@ const boostPadSystem = addBoostPads(trackData, [
   { idx: Math.floor(trackData.segments * 0.79), width: 14, length: 5.0 },
 ]);
 const boostPads = boostPadSystem.pads;
+
+const rampSystem = addTrackRamps(trackData, [
+  { idx: Math.floor(trackData.segments * 0.155), lateral: -6.0, width: 10.5, length: 21, height: 1.8 },
+  { idx: Math.floor(trackData.segments * 0.335), lateral: 5.5, width: 10.5, length: 19, height: 1.6 },
+  { idx: Math.floor(trackData.segments * 0.565), lateral: -5.0, width: 11.5, length: 24, height: 2.0 },
+  { idx: Math.floor(trackData.segments * 0.765), lateral: 6.0, width: 10.5, length: 20, height: 1.7 },
+]);
+const trackRamps = rampSystem.ramps;
+
+const SURFACE_SLOPE_SAMPLE_DIST = 1.2;
+const MAX_SURFACE_PITCH = 0.36;
+const surfaceForwardProbe = new THREE.Vector3();
+const surfacePosProbe = new THREE.Vector3();
+const defaultSurfacePose = { y: 0, pitch: 0 };
+
+function getRampHeightAtPosition(pos) {
+  let bestHeight = 0;
+
+  for (const ramp of trackRamps) {
+    const dx = pos.x - ramp.center.x;
+    const dz = pos.z - ramp.center.z;
+    const localL = dx * ramp.left.x + dz * ramp.left.z;
+    const localF = dx * ramp.tangent.x + dz * ramp.tangent.z;
+    if (Math.abs(localL) > ramp.halfW || Math.abs(localF) > ramp.halfL) continue;
+
+    const normalized = localF / ramp.halfL; // [-1, 1]
+    const profile = Math.max(0, Math.cos(normalized * Math.PI * 0.5));
+    const height = ramp.peakHeight * profile;
+    if (height > bestHeight) bestHeight = height;
+  }
+
+  return bestHeight;
+}
+
+function sampleTrackSurfacePose(pos, headingYaw, out = defaultSurfacePose) {
+  const yCenter = getRampHeightAtPosition(pos);
+  surfaceForwardProbe.set(Math.sin(headingYaw), 0, Math.cos(headingYaw));
+
+  surfacePosProbe.copy(pos).addScaledVector(surfaceForwardProbe, SURFACE_SLOPE_SAMPLE_DIST);
+  const yFront = getRampHeightAtPosition(surfacePosProbe);
+
+  surfacePosProbe.copy(pos).addScaledVector(surfaceForwardProbe, -SURFACE_SLOPE_SAMPLE_DIST);
+  const yBack = getRampHeightAtPosition(surfacePosProbe);
+
+  const pitch = Math.atan2(yFront - yBack, SURFACE_SLOPE_SAMPLE_DIST * 2);
+  out.y = yCenter;
+  out.pitch = THREE.MathUtils.clamp(pitch, -MAX_SURFACE_PITCH, MAX_SURFACE_PITCH);
+  return out;
+}
+
+function applyKartToTrackSurface(kartGroup, headingYaw) {
+  const pose = sampleTrackSurfacePose(kartGroup.position, headingYaw);
+  kartGroup.position.y = pose.y;
+  kartGroup.rotation.x = pose.pitch;
+}
 
 // ==============================
 // Start/Finish line
@@ -1088,6 +1235,7 @@ let yaw = startLine.yaw;
 }
 
 kart.rotation.y = yaw;
+applyKartToTrackSurface(kart, yaw);
 const playerRaceSpawnPosition = kart.position.clone();
 const playerRaceSpawnYaw = yaw;
 
@@ -1416,6 +1564,7 @@ function applyArenaTheme(themeId) {
   ground.material.color.setHex(t.groundColor);
   trackData.trackMesh.material.color.setHex(t.trackColor);
   trackData.edgeMesh.material.color.setHex(t.curbColor);
+  rampSystem.material.color.setHex(t.trackColor);
 
   trackEdgeLineL.material.color.setHex(t.edgeLineColor);
   trackEdgeLineR.material.color.setHex(t.edgeLineColor);
@@ -1631,9 +1780,9 @@ for (let aiIndex = 0; aiIndex < AI_PROFILES.length; aiIndex++) {
   const left = trackData.sampleLeft[START_IDX];
   const laneOffset = LANE_ORIGIN + prof.lane * LANE_SPACING;
   data.group.position.copy(startLine.position);
-  data.group.position.y = 0;
   data.group.position.addScaledVector(left, laneOffset);
   data.group.rotation.y = yaw;
+  applyKartToTrackSurface(data.group, yaw);
 
   aiRacers.push({
     data,
@@ -1764,6 +1913,7 @@ function updateAllAI(dt) {
       // Still spin wheels
       const spin = ai.currentSpeed * dt * 1.5;
       for (const w of ai.wheels) w.rotation.x += spin;
+      applyKartToTrackSurface(ai.group, ai.group.rotation.y);
       continue;  // skip normal AI driving while spinning
     }
 
@@ -1798,9 +1948,7 @@ function updateAllAI(dt) {
     if (targetT >= 1) targetT -= 1;
 
     const targetPos = curve.getPointAt(targetT);
-    targetPos.y = 0;
     const curPos = curve.getPointAt(ai.trackT);
-    curPos.y = 0;
 
     // Apply current (blended) lateral offset
     const tan = curve.getTangentAt(ai.trackT).setY(0).normalize();
@@ -1816,8 +1964,8 @@ function updateAllAI(dt) {
     const aiYaw = Math.atan2(tan.x, tan.z);
     const lerpRate = recovering ? ai.lerpRate * AI_RECOVERY_LERP_MULT : ai.lerpRate;
     ai.group.position.lerp(curPos, lerpRate * dt);
-    ai.group.position.y = 0;
     ai.group.rotation.y = aiYaw;
+    applyKartToTrackSurface(ai.group, aiYaw);
 
     // Spin wheels
     const spin = ai.currentSpeed * dt * 1.5;
@@ -1956,13 +2104,13 @@ function setCustomizerPresentation(active) {
   if (active) {
     if (kart.parent !== menuScene) menuScene.add(kart);
     kart.position.copy(CUSTOMIZER_MENU_POSITION);
-    kart.rotation.y = CUSTOMIZER_MENU_YAW;
+    kart.rotation.set(0, CUSTOMIZER_MENU_YAW, 0);
   } else {
     if (kart.parent !== scene) scene.add(kart);
     kart.position.copy(playerRaceSpawnPosition);
-    kart.position.y = 0;
     yaw = playerRaceSpawnYaw;
-    kart.rotation.y = yaw;
+    kart.rotation.set(0, yaw, 0);
+    applyKartToTrackSurface(kart, yaw);
   }
   steering.rotation.y = 0;
 
@@ -2280,8 +2428,8 @@ function toggleRacePaused() {
 function resetPlayerRaceState() {
   yaw = playerRaceSpawnYaw;
   kart.position.copy(playerRaceSpawnPosition);
-  kart.position.y = 0;
-  kart.rotation.y = yaw;
+  kart.rotation.set(0, yaw, 0);
+  applyKartToTrackSurface(kart, yaw);
 
   speed = 0;
   steerInput = 0;
@@ -2307,9 +2455,9 @@ function resetAIRaceState() {
 
   for (const ai of aiRacers) {
     ai.group.position.copy(startLine.position);
-    ai.group.position.y = 0;
     ai.group.position.addScaledVector(left, ai.startLaneOffset);
     ai.group.rotation.y = playerRaceSpawnYaw;
+    applyKartToTrackSurface(ai.group, ai.group.rotation.y);
     ai.group.visible = true;
 
     ai.trackT = START_T;
@@ -2484,8 +2632,7 @@ function resolveTrackCollision() {
     kart.position.addScaledVector(left, -sign * over);
     speed *= 0.92;
   }
-
-  kart.position.y = 0;
+  applyKartToTrackSurface(kart, yaw);
 }
 
 // Kart-to-kart collision  
@@ -2864,6 +3011,12 @@ function resolveKartCollision(dt) {
       aiAICollisionCooldown.set(key, COLLISION_PAIR_COOLDOWN);
     }
   }
+
+  // Ensure all karts stay snapped to ramp height after collision pushes.
+  applyKartToTrackSurface(kart, yaw);
+  for (const ai of aiRacers) {
+    applyKartToTrackSurface(ai.group, ai.group.rotation.y);
+  }
 }
 
 function updatePhysics(dt) {
@@ -2974,7 +3127,7 @@ function updatePhysics(dt) {
 function updateCustomizationPreview(dt) {
   previewKartSpin += dt * 0.95;
   kart.position.copy(CUSTOMIZER_MENU_POSITION);
-  kart.rotation.y = CUSTOMIZER_MENU_YAW + previewKartSpin;
+  kart.rotation.set(0, CUSTOMIZER_MENU_YAW + previewKartSpin, 0);
   customizerPlatform.position.set(0, CUSTOMIZER_LIFT_Y - CUSTOMIZER_PLATFORM_HEIGHT * 0.5, 0);
   customizerPlatform.rotation.y += dt * 0.6;
 
