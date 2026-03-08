@@ -2382,6 +2382,8 @@ const cameraTargetSmoothed = new THREE.Vector3();
 // Lightweight feedback UI state
 let boostFeedbackTimer = 0;
 let spinFeedbackTimer = 0;
+let personalBestFeedbackTimer = 0;
+let personalBestFeedbackDuration = 2.1;
 
 // Track progress checkpoint flags
 let playerPassedCheckpoint = false;
@@ -2392,12 +2394,14 @@ let playerBoostPadId = -1;
 
 const speedEl = document.getElementById("speed");
 const lapTimerEl = document.getElementById("lapTimer");
+const bestLapEl = document.getElementById("bestLapTimer");
 const leaderboardEl = document.getElementById("leaderboard");
 const clock = new THREE.Clock();
 
 let playerLap = 1;
 let playerPrevProgress = START_T;
 let playerLapElapsed = 0;
+let bestLapTimeSec = Infinity;
 
 function updatePauseUI() {
   if (pauseBannerEl) {
@@ -2493,6 +2497,7 @@ function resetRaceToStartState() {
   aiAICollisionCooldown.clear();
   boostFeedbackTimer = 0;
   spinFeedbackTimer = 0;
+  personalBestFeedbackTimer = 0;
 
   if (countdownEl) countdownEl.textContent = "";
   if (speedEl) speedEl.textContent = "0.0";
@@ -2549,6 +2554,11 @@ function updateRaceHud(dt) {
     }
 
     if (playerPrevProgress > 0.95 && playerProgress < 0.05 && Math.abs(speed) > 1 && playerPassedCheckpoint) {
+      const completedLapTime = playerLapElapsed;
+      if (completedLapTime > 0 && completedLapTime < bestLapTimeSec) {
+        bestLapTimeSec = completedLapTime;
+        showPersonalBestFeedback(completedLapTime);
+      }
       playerLap += 1;
       playerLapElapsed = 0;
       playerPassedCheckpoint = false;
@@ -2566,6 +2576,9 @@ function updateRaceHud(dt) {
   playerPrevProgress = playerProgress;
 
   lapTimerEl.textContent = formatTimeSec(playerLapElapsed);
+  if (bestLapEl) {
+    bestLapEl.textContent = Number.isFinite(bestLapTimeSec) ? formatTimeSec(bestLapTimeSec) : "--:--.---";
+  }
 
   const entries = [
     {
@@ -2753,6 +2766,7 @@ function progressNear(p, target, window = CHECKPOINT_WINDOW) {
 function ensureFeedbackElements() {
   let boostEl = document.getElementById("boostFeedback");
   let spinEl = document.getElementById("spinFeedback");
+  let personalBestEl = document.getElementById("personalBestFeedback");
 
   if (!boostEl) {
     boostEl = document.createElement("div");
@@ -2796,7 +2810,31 @@ function ensureFeedbackElements() {
     document.body.appendChild(spinEl);
   }
 
-  return { boostEl, spinEl };
+  if (!personalBestEl) {
+    personalBestEl = document.createElement("div");
+    personalBestEl.id = "personalBestFeedback";
+    personalBestEl.textContent = "NEW PERSONAL BEST!";
+    personalBestEl.style.position = "fixed";
+    personalBestEl.style.left = "50%";
+    personalBestEl.style.top = "68px";
+    personalBestEl.style.transform = "translateX(-50%)";
+    personalBestEl.style.padding = "10px 16px";
+    personalBestEl.style.borderRadius = "12px";
+    personalBestEl.style.fontWeight = "800";
+    personalBestEl.style.letterSpacing = "0.05em";
+    personalBestEl.style.background = "linear-gradient(135deg, rgba(115,255,190,0.92), rgba(84,178,255,0.9))";
+    personalBestEl.style.color = "#0a2136";
+    personalBestEl.style.border = "1px solid rgba(228,255,247,0.9)";
+    personalBestEl.style.boxShadow = "0 10px 26px rgba(32,133,189,0.35)";
+    personalBestEl.style.display = "none";
+    personalBestEl.style.pointerEvents = "none";
+    personalBestEl.style.whiteSpace = "nowrap";
+    personalBestEl.style.textTransform = "uppercase";
+    personalBestEl.style.zIndex = "9999";
+    document.body.appendChild(personalBestEl);
+  }
+
+  return { boostEl, spinEl, personalBestEl };
 }
 
 function showBoostFeedback(duration = 0.35) {
@@ -2807,14 +2845,23 @@ function showSpinFeedback(duration = 0.55) {
   spinFeedbackTimer = Math.max(spinFeedbackTimer, duration);
 }
 
+function showPersonalBestFeedback(lapTimeSec, duration = 2.1) {
+  const { personalBestEl } = ensureFeedbackElements();
+  personalBestEl.textContent = `NEW PERSONAL BEST! ${formatTimeSec(lapTimeSec)}`;
+  personalBestFeedbackDuration = duration;
+  personalBestFeedbackTimer = Math.max(personalBestFeedbackTimer, duration);
+}
+
 function updateFeedbackUI(dt) {
-  const { boostEl, spinEl } = ensureFeedbackElements();
+  const { boostEl, spinEl, personalBestEl } = ensureFeedbackElements();
 
   boostFeedbackTimer = Math.max(0, boostFeedbackTimer - dt);
   spinFeedbackTimer = Math.max(0, spinFeedbackTimer - dt);
+  personalBestFeedbackTimer = Math.max(0, personalBestFeedbackTimer - dt);
 
   boostEl.style.display = boostFeedbackTimer > 0 ? "block" : "none";
   spinEl.style.display = spinFeedbackTimer > 0 ? "block" : "none";
+  personalBestEl.style.display = personalBestFeedbackTimer > 0 ? "block" : "none";
 
   if (boostFeedbackTimer > 0) {
     const a = clamp01(boostFeedbackTimer / 0.35);
@@ -2832,6 +2879,22 @@ function updateFeedbackUI(dt) {
   } else {
     spinEl.style.opacity = "1";
     spinEl.style.transform = "translateX(-50%)";
+  }
+
+  if (personalBestFeedbackTimer > 0) {
+    const duration = Math.max(0.001, personalBestFeedbackDuration);
+    const t = clamp01(1 - (personalBestFeedbackTimer / duration));
+    const intro = clamp01(t / 0.18);
+    const outro = clamp01((t - 0.72) / 0.28);
+    const opacity = clamp01(intro * (1 - outro * 0.92));
+    const scale = 0.9 + intro * 0.14 - outro * 0.1;
+    const y = (1 - intro) * 14 - outro * 20;
+
+    personalBestEl.style.opacity = String(Math.max(0.01, opacity));
+    personalBestEl.style.transform = `translate(-50%, ${y.toFixed(2)}px) scale(${scale.toFixed(3)})`;
+  } else {
+    personalBestEl.style.opacity = "1";
+    personalBestEl.style.transform = "translateX(-50%)";
   }
 }
 
