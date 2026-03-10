@@ -1,29 +1,66 @@
-# CS 174A Project - Group: Shreyas, Kaena, Chong
+# CS 174A Project
 
-This repository is for **CS 174A** project (Web graphics / JavaScript).  
-It includes the source code and configuration needed to run the project locally.
-
----
+Mini-kart arena racing built with JavaScript, Three.js, and Vite.
 
 ## Project Overview
 
-**What this project is:**  
-- A web-based graphics project written in JavaScript.
-- Mini-Kart arena racing in a simulated envionment
-- The entry point is `index.html`, and the main logic is in `main.js`.
+- The app entry point is `index.html`.
+- Main gameplay and rendering logic live in `main.js`.
+- Dependencies and scripts are defined in `package.json`.
 
-**What you’ll find here:**  
-- Source files (`index.html`, `main.js`)
-- Dependency files (`package.json`, `package-lock.json`)
-- A setup guide for running the project
----
+## Prerequisites
+
+- Node.js
+- npm
+
+## Setup
+
+Install dependencies from the project root:
+
+```bash
+npm install
+```
+
+## Run Locally
+
+Start the Vite development server:
+
+```bash
+npx vite
+```
+
+After the server starts, open the local URL shown in the terminal. It is usually:
+
+```txt
+http://localhost:5173/
+```
+
+## Build for Production
+
+Create a production build:
+
+```bash
+npm run build
+```
+
+## Controls
+
+- `W` / `S`: throttle / brake
+- `A` / `D`: steer
+- `P`: pause / resume
+- `C`: reset camera
+- `Enter`: advance through the start menu / begin race
+- Mouse drag: orbit camera
+- Mouse wheel: zoom camera
 
 ## File Structure
 
 ```txt
-cs174_project/
-  ├─ index.html
-  ├─ main.js
-  ├─ package.json
-  ├─ package-lock.json
-  └─ (node_modules/)   <-- NOT included in the repo (generated locally) by running 'npm install'
+174-project/
+├─ index.html
+├─ main.js
+├─ package.json
+├─ package-lock.json
+├─ assets/
+└─ node_modules/   generated locally after npm install
+```
