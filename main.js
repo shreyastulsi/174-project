@@ -997,14 +997,14 @@ function getRampBoostFactorAtPosition(pos) {
 }
 
 function sampleTrackSurfacePose(pos, headingYaw, out = defaultSurfacePose) {
-  const yCenter = getRampHeightAtPosition(pos);
+  const yCenter = trackData.roadY + getRampHeightAtPosition(pos);
   surfaceForwardProbe.set(Math.sin(headingYaw), 0, Math.cos(headingYaw));
 
   surfacePosProbe.copy(pos).addScaledVector(surfaceForwardProbe, SURFACE_SLOPE_SAMPLE_DIST);
-  const yFront = getRampHeightAtPosition(surfacePosProbe);
+  const yFront = trackData.roadY + getRampHeightAtPosition(surfacePosProbe);
 
   surfacePosProbe.copy(pos).addScaledVector(surfaceForwardProbe, -SURFACE_SLOPE_SAMPLE_DIST);
-  const yBack = getRampHeightAtPosition(surfacePosProbe);
+  const yBack = trackData.roadY + getRampHeightAtPosition(surfacePosProbe);
 
   const pitch = Math.atan2(yFront - yBack, SURFACE_SLOPE_SAMPLE_DIST * 2);
   out.y = yCenter;
@@ -2858,7 +2858,7 @@ function updateRaceHud(dt) {
 
   const entries = [
     {
-      color: "Red",
+      color: "Player",
       lap: playerLap,
       progress: playerProgress,
       metric: (playerLap - 1) + playerProgress,
