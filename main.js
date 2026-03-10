@@ -2516,8 +2516,17 @@ initKartCustomizer();
 // Input
 // ==============================
 const keys = { w: false, a: false, s: false, d: false };
+
+function clearDriveInputState() {
+  keys.w = false;
+  keys.a = false;
+  keys.s = false;
+  keys.d = false;
+}
+
 window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
+  if (e.repeat && (k === "enter" || k === "p" || k === CAMERA_RESET_KEY)) return;
   if (customizationActive && k === "enter") {
     if (startMenuStep === "theme") {
       beginRaceFromCustomizer();
@@ -2558,12 +2567,21 @@ let orbitDistance = 9.0;
 let manualYawOffset = 0;          // temporary offset while dragging
 const CAM_FOLLOW_SPEED = 3.0;     // how fast the camera re-centres (higher = snappier)
 
+function clearPointerInputState() {
+  isDragging = false;
+}
+
+function clearTransientInputState() {
+  clearDriveInputState();
+  clearPointerInputState();
+}
+
 renderer.domElement.addEventListener("mousedown", (e) => {
   isDragging = true;
   lastX = e.clientX;
   lastY = e.clientY;
 });
-window.addEventListener("mouseup", () => (isDragging = false));
+window.addEventListener("mouseup", () => clearPointerInputState());
 window.addEventListener("mousemove", (e) => {
   if (!isDragging) return;
   const dx = e.clientX - lastX;
@@ -2578,6 +2596,14 @@ window.addEventListener("mousemove", (e) => {
 renderer.domElement.addEventListener("wheel", (e) => {
   orbitDistance += e.deltaY * 0.01;
   orbitDistance = Math.max(5.0, Math.min(20.0, orbitDistance));
+});
+window.addEventListener("blur", () => {
+  clearTransientInputState();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearTransientInputState();
+  }
 });
 
 // ==============================
