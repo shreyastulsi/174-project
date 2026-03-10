@@ -2240,8 +2240,6 @@ const themePanelEl = document.getElementById("themePanel");
 const customizeTitleEl = document.getElementById("customizeTitle");
 const customizeSubEl = document.getElementById("customizeSub");
 const themeGridEl = document.getElementById("themeGrid");
-const themePanelTitleEl = document.getElementById("themePanelTitle");
-const themePanelSubEl = document.getElementById("themePanelSub");
 const customizeSectionsEl = document.getElementById("customizeSections");
 const customizePaletteEl = document.getElementById("customizePalette");
 const customizeSelectionEl = document.getElementById("customizeSelection");
@@ -2292,21 +2290,27 @@ function hexLabel(hex) {
 }
 
 function updateStartMenuStepUI() {
-  if (customizePanelEl) customizePanelEl.classList.remove("hidden");
-  if (themePanelEl) themePanelEl.classList.add("hidden");
-  if (customizeOverlayEl) customizeOverlayEl.style.alignItems = "flex-end";
+  const showingThemeStep = startMenuStep === "theme";
+
+  if (customizePanelEl) customizePanelEl.classList.toggle("hidden", showingThemeStep);
+  if (themePanelEl) themePanelEl.classList.toggle("hidden", !showingThemeStep);
+  if (customizeOverlayEl) customizeOverlayEl.style.alignItems = showingThemeStep ? "center" : "flex-end";
 
   if (customizeTitleEl) customizeTitleEl.textContent = "Kart Customizer";
   if (customizeSubEl) {
-    customizeSubEl.textContent = "Pick a section, click a color, then start the race.";
+    customizeSubEl.textContent = "Pick a section, click a color, then continue to arena theme.";
   }
-  if (nextToThemeBtn) nextToThemeBtn.textContent = "Accept & Start Race";
+  if (nextToThemeBtn) nextToThemeBtn.textContent = "Next: Arena Theme";
+
+  if (showingThemeStep) {
+    renderThemeGrid();
+  }
 
   updateCustomizerSelectionText();
 }
 
 function setStartMenuStep(step) {
-  startMenuStep = "kart";
+  startMenuStep = step === "theme" ? "theme" : "kart";
   updateStartMenuStepUI();
 }
 
@@ -2451,16 +2455,26 @@ function initKartCustomizer() {
   applyPlayerKartCustomization();
   renderCustomizerSections();
   renderCustomizerPalette();
+  renderThemeGrid();
   setStartMenuStep("kart");
 
   if (nextToThemeBtn) {
     nextToThemeBtn.addEventListener("click", () => {
+      setStartMenuStep("theme");
+    });
+  }
+
+  if (acceptCustomizationBtn) {
+    acceptCustomizationBtn.addEventListener("click", () => {
       beginRaceFromCustomizer();
     });
   }
 
-  // Theme picker is temporarily disabled, keep the hidden controls inert.
-  if (themePanelEl) themePanelEl.classList.add("hidden");
+  if (customizeBackBtn) {
+    customizeBackBtn.addEventListener("click", () => {
+      setStartMenuStep("kart");
+    });
+  }
 }
 
 function beginRaceFromCustomizer() {
@@ -2505,7 +2519,11 @@ const keys = { w: false, a: false, s: false, d: false };
 window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if (customizationActive && k === "enter") {
-    beginRaceFromCustomizer();
+    if (startMenuStep === "theme") {
+      beginRaceFromCustomizer();
+    } else {
+      setStartMenuStep("theme");
+    }
     return;
   }
   if (!customizationActive && k === "p") {
