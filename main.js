@@ -2250,6 +2250,7 @@ const customizeBackBtn = document.getElementById("customizeBackBtn");
 const raceHudPanelEl = document.getElementById("raceHud");
 const pauseRaceBtn = document.getElementById("pauseRaceBtn");
 const restartRaceBtn = document.getElementById("restartRaceBtn");
+const soundToggleBtn = document.getElementById("soundToggleBtn");
 
 const KART_CUSTOMIZER_SECTIONS = [
   {
@@ -2513,6 +2514,147 @@ function startCountdown() {
 initKartCustomizer();
 
 // ==============================
+// Sound (engine rev)
+// ==============================
+const ENGINE_AUDIO_MIN_FREQ = 82;
+const ENGINE_AUDIO_MAX_FREQ = 205;
+const ENGINE_AUDIO_ACCEL_FREQ_BONUS = 76;
+const ENGINE_AUDIO_BASE_GAIN = 0.03;
+const ENGINE_AUDIO_SPEED_GAIN = 0.09;
+const ENGINE_AUDIO_PITCH_LERP = 11.5;
+const ENGINE_AUDIO_GAIN_ATTACK = 14;
+const ENGINE_AUDIO_GAIN_RELEASE = 8;
+
+let soundMuted = false;
+let engineAudio = null;
+const engineAudioState = {
+  freq: ENGINE_AUDIO_MIN_FREQ,
+  gain: 0,
+};
+
+function updateSoundToggleUI() {
+  if (!soundToggleBtn) return;
+  soundToggleBtn.textContent = soundMuted ? "Unmute" : "Mute";
+}
+
+function ensureEngineAudio() {
+  if (engineAudio) return true;
+
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) return false;
+
+  const ctx = new AudioContextCtor();
+  const master = ctx.createGain();
+  master.gain.value = soundMuted ? 0 : 1;
+  master.connect(ctx.destination);
+
+  const revGain = ctx.createGain();
+  revGain.gain.value = 0;
+
+  const toneFilter = ctx.createBiquadFilter();
+  toneFilter.type = "lowpass";
+  toneFilter.frequency.value = 420;
+  toneFilter.Q.value = 0.9;
+
+  const oscMain = ctx.createOscillator();
+  oscMain.type = "sawtooth";
+  oscMain.frequency.value = ENGINE_AUDIO_MIN_FREQ;
+
+  const oscSub = ctx.createOscillator();
+  oscSub.type = "triangle";
+  oscSub.frequency.value = ENGINE_AUDIO_MIN_FREQ * 0.5;
+
+  const oscUpper = ctx.createOscillator();
+  oscUpper.type = "square";
+  oscUpper.frequency.value = ENGINE_AUDIO_MIN_FREQ * 1.98;
+  oscUpper.detune.value = 3;
+
+  oscMain.connect(toneFilter);
+  oscSub.connect(toneFilter);
+  oscUpper.connect(toneFilter);
+  toneFilter.connect(revGain);
+  revGain.connect(master);
+
+  oscMain.start();
+  oscSub.start();
+  oscUpper.start();
+
+  engineAudio = {
+    ctx,
+    master,
+    revGain,
+    toneFilter,
+    oscMain,
+    oscSub,
+    oscUpper,
+  };
+  return true;
+}
+
+function resumeEngineAudioFromGesture() {
+  if (!ensureEngineAudio()) return;
+  if (engineAudio.ctx.state === "suspended") {
+    engineAudio.ctx.resume().catch(() => {});
+  }
+}
+
+function setSoundMuted(muted) {
+  soundMuted = Boolean(muted);
+  updateSoundToggleUI();
+
+  if (!engineAudio) return;
+  const now = engineAudio.ctx.currentTime;
+  engineAudio.master.gain.cancelScheduledValues(now);
+  engineAudio.master.gain.setTargetAtTime(soundMuted ? 0 : 1, now, 0.02);
+}
+
+function silenceEngineRevAudio(immediate = false) {
+  if (!engineAudio) return;
+  engineAudioState.gain = 0;
+  const now = engineAudio.ctx.currentTime;
+  engineAudio.revGain.gain.cancelScheduledValues(now);
+  if (immediate) {
+    engineAudio.revGain.gain.setValueAtTime(0, now);
+  } else {
+    engineAudio.revGain.gain.setTargetAtTime(0, now, 0.03);
+  }
+}
+
+function updateEngineRevAudio(dt, accelerating, currentSpeed) {
+  if (!engineAudio || engineAudio.ctx.state !== "running") return;
+
+  const forwardSpeed = Math.max(0, currentSpeed);
+  const speedNorm = clamp01(forwardSpeed / MAX_SPEED);
+  const accelFactor = accelerating ? 1 : 0;
+
+  const targetFreq =
+    ENGINE_AUDIO_MIN_FREQ +
+    (ENGINE_AUDIO_MAX_FREQ - ENGINE_AUDIO_MIN_FREQ) * speedNorm +
+    ENGINE_AUDIO_ACCEL_FREQ_BONUS * accelFactor;
+  const targetGain = accelerating
+    ? ENGINE_AUDIO_BASE_GAIN + ENGINE_AUDIO_SPEED_GAIN * speedNorm
+    : 0;
+
+  const pitchLerp = Math.min(1, dt * ENGINE_AUDIO_PITCH_LERP);
+  const gainLerp = Math.min(1, dt * (accelerating ? ENGINE_AUDIO_GAIN_ATTACK : ENGINE_AUDIO_GAIN_RELEASE));
+  engineAudioState.freq += (targetFreq - engineAudioState.freq) * pitchLerp;
+  engineAudioState.gain += (targetGain - engineAudioState.gain) * gainLerp;
+
+  const now = engineAudio.ctx.currentTime;
+  engineAudio.oscMain.frequency.setTargetAtTime(engineAudioState.freq, now, 0.015);
+  engineAudio.oscSub.frequency.setTargetAtTime(engineAudioState.freq * 0.5, now, 0.015);
+  engineAudio.oscUpper.frequency.setTargetAtTime(engineAudioState.freq * 1.98, now, 0.015);
+  engineAudio.toneFilter.frequency.setTargetAtTime(
+    320 + speedNorm * 1350 + accelFactor * 680,
+    now,
+    0.02
+  );
+  engineAudio.revGain.gain.setTargetAtTime(Math.max(0, engineAudioState.gain), now, 0.018);
+}
+
+updateSoundToggleUI();
+
+// ==============================
 // Input
 // ==============================
 const keys = { w: false, a: false, s: false, d: false };
@@ -2525,6 +2667,7 @@ function clearDriveInputState() {
 }
 
 window.addEventListener("keydown", (e) => {
+  resumeEngineAudioFromGesture();
   const k = e.key.toLowerCase();
   if (e.repeat && (k === "enter" || k === "p" || k === CAMERA_RESET_KEY)) return;
   if (customizationActive && k === "enter") {
@@ -2577,10 +2720,14 @@ function clearTransientInputState() {
 }
 
 renderer.domElement.addEventListener("mousedown", (e) => {
+  resumeEngineAudioFromGesture();
   isDragging = true;
   lastX = e.clientX;
   lastY = e.clientY;
 });
+window.addEventListener("touchstart", () => {
+  resumeEngineAudioFromGesture();
+}, { passive: true });
 window.addEventListener("mouseup", () => clearPointerInputState());
 window.addEventListener("mousemove", (e) => {
   if (!isDragging) return;
@@ -2599,10 +2746,12 @@ renderer.domElement.addEventListener("wheel", (e) => {
 });
 window.addEventListener("blur", () => {
   clearTransientInputState();
+  silenceEngineRevAudio();
 });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     clearTransientInputState();
+    silenceEngineRevAudio(true);
   }
 });
 
@@ -2717,6 +2866,7 @@ function clearCountdownInterval() {
 
 function setRacePaused(paused) {
   racePaused = Boolean(paused) && raceStarted && !customizationActive;
+  if (racePaused) silenceEngineRevAudio();
   updatePauseUI();
 }
 
@@ -2751,6 +2901,7 @@ function resetPlayerRaceState() {
   for (const w of wheels) w.rotation.x = 0;
 
   cameraTargetSmoothed.set(0, 0, 0);
+  silenceEngineRevAudio(true);
 }
 
 function resetAIRaceState() {
@@ -2819,7 +2970,14 @@ if (pauseRaceBtn) {
 if (restartRaceBtn) {
   restartRaceBtn.addEventListener("click", () => restartRace());
 }
+if (soundToggleBtn) {
+  soundToggleBtn.addEventListener("click", () => {
+    resumeEngineAudioFromGesture();
+    setSoundMuted(!soundMuted);
+  });
+}
 updatePauseUI();
+updateSoundToggleUI();
 
 function formatTimeSec(seconds) {
   const ms = Math.floor((seconds % 1) * 1000).toString().padStart(3, "0");
@@ -3594,6 +3752,14 @@ function animate() {
   } else {
     updateCamera(dt);
   }
+  const accelerating =
+    !customizationActive &&
+    raceStarted &&
+    !racePaused &&
+    !playerSpinning &&
+    keys.w &&
+    speed > -0.5;
+  updateEngineRevAudio(dt, accelerating, speed);
   updateRaceHud(dt);
   updateFeedbackUI(dt);
 
