@@ -301,7 +301,6 @@ const dashedLineAlphaTex = makeDashAlphaTexture();
 const arrowDecalTex = makeArrowDecalTexture();
 const boostPadTex = makeBoostPadTexture();
 
-// Lights
 const hemi = new THREE.HemisphereLight(0xeaf6ff, 0x4f7f43, 0.95);
 scene.add(hemi);
 
@@ -365,7 +364,6 @@ function buildTrack({ points, trackWidth = 11, segments = 900, roadY = 0.08 }) {
     sampleLeft.push(left);
   }
 
-  // ---- Track ribbon geometry ----
   const positions = [];
   const uvs = [];
   const indices = [];
@@ -384,7 +382,6 @@ function buildTrack({ points, trackWidth = 11, segments = 900, roadY = 0.08 }) {
     uvs.push(1, i / segments);
   }
 
-  // wrap connectivity
   for (let i = 0; i < segments; i++) {
     const ni = (i + 1) % segments;
 
@@ -833,31 +830,26 @@ function addTrackRamps(track, placements) {
 // 4) straight back (down -Z) returning to start
 // ==============================
 const trackPoints = [
-    // --- LONG STRAIGHT (up +Z) at x = 0 ---
     new THREE.Vector3(0, 0, -55),
     new THREE.Vector3(0, 0, -15),
     new THREE.Vector3(0, 0, 25),
     new THREE.Vector3(0, 0, 65),
     new THREE.Vector3(0, 0, 105),
 
-    // --- TOP TURN: smooth right-hand sweep ---
     new THREE.Vector3(5, 0, 135),
     new THREE.Vector3(20, 0, 155),
     new THREE.Vector3(50, 0, 165),
     new THREE.Vector3(80, 0, 155),
     new THREE.Vector3(100, 0, 135),
 
-    // --- RIGHT TURN into back straight ---
     new THREE.Vector3(110, 0, 110),
     new THREE.Vector3(115, 0, 85),
 
-    // --- BACK STRAIGHT (down -Z) at x ≈ 115 ---
     new THREE.Vector3(115, 0, 55),
     new THREE.Vector3(115, 0, 15),
     new THREE.Vector3(115, 0, -25),
     new THREE.Vector3(115, 0, -65),
 
-    // --- BOTTOM TURN: wide arc back to start straight ---
     new THREE.Vector3(110, 0, -95),
     new THREE.Vector3(90, 0, -120),
     new THREE.Vector3(60, 0, -135),
@@ -875,7 +867,6 @@ const trackData = buildTrack({
   roadY: 0.08,
 });
 
-// Road paint and decals for a more arcade track look.
 const edgeLineInset = trackData.halfW - 1.55;
 const trackEdgeLineL = addTrackPaintStrip(trackData, {
   offset: edgeLineInset,
@@ -1330,32 +1321,27 @@ const darkMat = playerTrimMat;
 const glassMat = makeKartGlassMaterial();
 const lightMat = makeHeadlightMaterial();
 
-// Body
 const body = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.6, 3.2), redMat);
 body.position.y = 0.55;
 body.castShadow = true;
 kart.add(body);
 
-// Hood (front marker, +Z)
 const hood = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.25, 1.2), redMat);
 hood.position.set(0, 0.75, 1.05);
 hood.castShadow = true;
 kart.add(hood);
 
-// Windshield
 const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.35, 0.08), glassMat);
 windshield.position.set(0, 1.0, 0.55);
 windshield.rotation.x = -0.35;
 windshield.castShadow = true;
 kart.add(windshield);
 
-// Spoiler (rear)
 const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.15, 0.35), darkMat);
 spoiler.position.set(0, 1.0, -1.45);
 spoiler.castShadow = true;
 kart.add(spoiler);
 
-// Side pods / fenders for chunkier silhouette
 for (const x of [-1.1, 1.1]) {
   const pod = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.26, 2.2), redMat);
   pod.position.set(x, 0.45, 0.0);
@@ -1363,14 +1349,12 @@ for (const x of [-1.1, 1.1]) {
   kart.add(pod);
 }
 
-// Lights
 const headL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.15, 0.1), lightMat);
 const headR = headL.clone();
 headL.position.set(-0.75, 0.55, 1.65);
 headR.position.set(0.75, 0.55, 1.65);
 kart.add(headL, headR);
 
-// Seat
 const seat = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.5, 1.0), playerSeatMat);
 seat.position.set(0, 0.8, -0.15);
 seat.castShadow = true;
@@ -1379,14 +1363,12 @@ kart.add(seat);
 const playerDecals = addKartDecals(kart, 0xff3b3b, 1);
 addKartExhausts(kart);
 
-// Steering column
 const column = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.4, 12), darkMat);
 column.position.set(0, 1.05, 0.2);
 column.rotation.x = Math.PI / 2.6;
 column.castShadow = true;
 kart.add(column);
 
-// Steering wheel
 const steering = new THREE.Group();
 steering.position.set(0, 1.15, 0.28);
 kart.add(steering);
@@ -1400,7 +1382,6 @@ const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.02, 0.45), darkMat);
 spoke.castShadow = true;
 steering.add(spoke);
 
-// Driver
 const driver = new THREE.Group();
 kart.add(driver);
 
@@ -1420,7 +1401,6 @@ head.position.set(0, 1.7, -0.15);
 head.castShadow = true;
 driver.add(head);
 
-// Hands on wheel
 const handMat = new THREE.MeshStandardMaterial({ color: 0xf2c9a0, roughness: 0.9 });
 const handL = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 12), handMat);
 const handR = handL.clone();
@@ -1429,7 +1409,6 @@ handR.position.set(0.23, 0.0, 0.0);
 handL.castShadow = handR.castShadow = true;
 steering.add(handL, handR);
 
-// Wheels
 function makeWheel(x, z) {
   return addKartWheel(kart, x, z, {
     rimMat: playerRimMat,
@@ -1443,8 +1422,6 @@ const wheels = [
   makeWheel(0.95, -1.15),
 ];
 
-// Spawn at the start line — player gets lane index 2 (centre of 5)
-// All 5 karts are evenly spread across the start line axis
 const LANE_SPACING = 7;          // units between lane centres
 const TOTAL_LANES = 5;           // 1 player + 4 AI
 const LANE_ORIGIN = -(TOTAL_LANES - 1) / 2 * LANE_SPACING; // leftmost lane offset
@@ -1457,7 +1434,6 @@ const CUSTOMIZER_MENU_YAW = Math.PI * 0.1;
 kart.position.set(startLine.position.x, 0, startLine.position.z);
 let yaw = startLine.yaw;
 
-// Offset player to its lane (lateral along the start line)
 {
   const left = trackData.sampleLeft[START_IDX];
   const laneOffset = LANE_ORIGIN + PLAYER_LANE * LANE_SPACING;
@@ -1850,7 +1826,6 @@ function makeThemePreviewDataUrl(theme) {
   ctx.fillStyle = p.terrain;
   ctx.fillRect(0, 110, c.width, 70);
 
-  // Stylized road wedge
   ctx.fillStyle = p.road;
   ctx.beginPath();
   ctx.moveTo(112, 180);
@@ -1860,7 +1835,6 @@ function makeThemePreviewDataUrl(theme) {
   ctx.closePath();
   ctx.fill();
 
-  // Curbs
   const curbWidth = 10;
   for (let i = 0; i < 7; i++) {
     const t0 = i / 7;
@@ -1888,7 +1862,6 @@ function makeThemePreviewDataUrl(theme) {
     ctx.fill();
   }
 
-  // Center line
   ctx.strokeStyle = p.accent;
   ctx.lineWidth = 5;
   ctx.setLineDash([14, 12]);
@@ -1897,7 +1870,6 @@ function makeThemePreviewDataUrl(theme) {
   ctx.lineTo(210, 118);
   ctx.stroke();
 
-  // Glowy sign dots for night/sunset cards
   ctx.setLineDash([]);
   ctx.fillStyle = "rgba(255,255,255,0.65)";
   for (const x of [18, 34, 50, 66, 352, 368, 384, 400]) {
@@ -1934,13 +1906,11 @@ function buildKartModel(bodyColor, number = 2) {
   addKartDecals(g, bodyColor, number);
   addKartExhausts(g);
 
-  // Driver
   const tr = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.35, 0.75, 16), new THREE.MeshStandardMaterial({ color: 0x33aa55, roughness: 0.9 }));
   tr.position.set(0, 1.18, -0.15); tr.castShadow = true; g.add(tr);
   const hd = new THREE.Mesh(new THREE.SphereGeometry(0.23, 18, 18), new THREE.MeshStandardMaterial({ color: 0xf2c9a0, roughness: 0.9 }));
   hd.position.set(0, 1.7, -0.15); hd.castShadow = true; g.add(hd);
 
-  // Wheels
   const aiWheels = [];
   function mkW(x, z) { const w = addKartWheel(g, x, z); aiWheels.push(w); return w; }
   mkW(-0.95, 1.15); mkW(0.95, 1.15); mkW(-0.95, -1.15); mkW(0.95, -1.15);
@@ -1953,7 +1923,6 @@ function buildKartModel(bodyColor, number = 2) {
 // ==============================
 const START_T = 0.06;  // same parametric t as the player's start
 
-// AI lane indices (0-4, skipping PLAYER_LANE = 2)
 const AI_LANES = [0, 1, 3, 4];
 
 const AI_PROFILES = [
@@ -2006,7 +1975,6 @@ for (let aiIndex = 0; aiIndex < AI_PROFILES.length; aiIndex++) {
   const data = buildKartModel(prof.color, aiIndex + 2);
   scene.add(data.group);
 
-  // Place on the start line in its assigned lane — same row as the player
   const left = trackData.sampleLeft[START_IDX];
   const laneOffset = LANE_ORIGIN + prof.lane * LANE_SPACING;
   data.group.position.copy(startLine.position);
@@ -2030,17 +1998,13 @@ for (let aiIndex = 0; aiIndex < AI_PROFILES.length; aiIndex++) {
     startLaneOffset: laneOffset,
     boostTimer: 0,
     boostPadId: -1,
-    // Spinout state
     spinning: false,
     spinVel: 0,
-    // Race state
     lap: 1,
     prevProgress: START_T,
     passedCheckpoint: false,
-    // Recovery state after spinout
     recoveryTimer: 0,
     recoveryLateralBlendBoost: 0,
-    // Airborne state
     airborne: false,
     verticalVel: 0,
     lastLaunchedRampId: -1,
@@ -2119,39 +2083,31 @@ function updateAllAI(dt) {
       ai.recoveryTimer = Math.max(0, ai.recoveryTimer - dt);
     }
 
-    // --- Handle spinout ---
     if (ai.spinning) {
-      // Decelerate
       ai.currentSpeed *= Math.max(0, 1 - 4 * dt);
 
-      // Apply spin rotation
       ai.group.rotation.y += ai.spinVel * dt;
 
-      // Decay spin
       const spinSign = Math.sign(ai.spinVel);
       ai.spinVel -= spinSign * SPIN_DECAY * dt;
       if (Math.abs(ai.spinVel) < SPIN_RECOVER_THRESHOLD) {
         ai.spinning = false;
         ai.spinVel = 0;
 
-        // Enter a short recovery mode instead of snapping to perfect driving immediately
         ai.recoveryTimer = AI_RECOVERY_DURATION;
         ai.recoveryLateralBlendBoost = 0;
         ai.currentSpeed *= 0.55;
 
-        // Snap trackT to current position so AI resumes from here
         ai.nearestIdx = findNearestSampleIndexXZFor(ai.group.position, ai.nearestIdx);
         ai.trackT = ai.nearestIdx / trackData.segments;
       }
 
-      // Still spin wheels
       const spin = ai.currentSpeed * dt * 1.5;
       for (const w of ai.wheels) w.rotation.x += spin;
       updateKartAirborneState(ai.group, ai.group.rotation.y, ai.currentSpeed, ai, dt, AI_RAMP_LAUNCH_MULT);
       continue;  // skip normal AI driving while spinning
     }
 
-    // --- Normal driving / recovery driving ---
     const recovering = ai.recoveryTimer > 0;
     const recoveryAlpha = clamp01(ai.recoveryTimer / AI_RECOVERY_DURATION);
     const aiRampBoostFactor = ai.airborne ? 0 : getRampBoostFactorAtPosition(ai.group.position);
@@ -2174,7 +2130,6 @@ function updateAllAI(dt) {
       ai.currentSpeed = Math.max(ai.currentSpeed, rampFloorSpeed);
     }
 
-    // Gradually blend from current lateral toward preferred racing line
     const baseBlendSpeed = 0.3;
     const recoveryBlendMultiplier = recovering ? (0.35 + 0.65 * (1 - recoveryAlpha)) : 1.0;
     const lateralBlendSpeed = baseBlendSpeed * recoveryBlendMultiplier;
@@ -2182,12 +2137,10 @@ function updateAllAI(dt) {
     const lateralDiff = ai.lateralOff - ai.currentLateral;
     ai.currentLateral += lateralDiff * lateralBlendSpeed * dt;
 
-    // Advance parametric t based on current speed
     ai.trackT += (ai.currentSpeed * dt) / totalLen;
     if (ai.trackT >= 1) ai.trackT -= 1;
     if (ai.trackT < 0) ai.trackT += 1;
 
-    // Per-racer lookahead controls how early it starts turning
     const lookahead = ai.lookahead + (recovering ? AI_RECOVERY_LOOKAHEAD_BONUS : 0);
     let targetT = ai.trackT + lookahead;
     if (targetT >= 1) targetT -= 1;
@@ -2195,17 +2148,14 @@ function updateAllAI(dt) {
     const targetPos = curve.getPointAt(targetT);
     const curPos = curve.getPointAt(ai.trackT);
 
-    // Apply current (blended) lateral offset
     const tan = curve.getTangentAt(ai.trackT).setY(0).normalize();
     const leftDir = new THREE.Vector3(-tan.z, 0, tan.x);
     curPos.addScaledVector(leftDir, ai.currentLateral);
 
-    // Apply the same lateral offset to the target so the kart faces along the track
     const tanTarget = curve.getTangentAt(targetT).setY(0).normalize();
     const leftTarget = new THREE.Vector3(-tanTarget.z, 0, tanTarget.x);
     targetPos.addScaledVector(leftTarget, ai.currentLateral);
 
-    // Orient along the track tangent for a clean heading
     const aiYaw = Math.atan2(tan.x, tan.z);
     const lerpRate = recovering ? ai.lerpRate * AI_RECOVERY_LERP_MULT : ai.lerpRate;
     const prevY = ai.group.position.y;
@@ -2214,7 +2164,6 @@ function updateAllAI(dt) {
     ai.group.rotation.y = aiYaw;
     updateKartAirborneState(ai.group, aiYaw, ai.currentSpeed, ai, dt, AI_RAMP_LAUNCH_MULT);
 
-    // Spin wheels
     const spin = ai.currentSpeed * dt * 1.5;
     for (const w of ai.wheels) w.rotation.x += spin;
 
@@ -2988,12 +2937,10 @@ function formatTimeSec(seconds) {
 }
 
 function updateLapWrap(racer, progress, speedMag) {
-  // Mark checkpoint when racer passes the mid-track checkpoint
   if (progressNear(progress, CHECKPOINT_T)) {
     racer.passedCheckpoint = true;
   }
 
-  // Only count lap when crossing start line after checkpoint has been passed
   if (racer.prevProgress > 0.95 && progress < 0.05 && speedMag > 1 && racer.passedCheckpoint) {
     racer.lap += 1;
     racer.passedCheckpoint = false;
@@ -3361,15 +3308,12 @@ function updateFeedbackUI(dt) {
 }
 
 function resolveKartCollision(dt) {
-  // Update pairwise cooldown timers first
   updateCooldownMap(playerAICollisionCooldown, dt);
   updateCooldownMap(aiAICollisionCooldown, dt);
 
-  // Player vs every AI kart
   for (let aiIndex = 0; aiIndex < aiRacers.length; aiIndex++) {
     const ai = aiRacers[aiIndex];
 
-    // Broad-phase quick reject
     if (!broadPhaseKartHit(kart.position, ai.group.position)) continue;
 
     const pairCd = playerAICollisionCooldown.get(aiIndex) ?? 0;
@@ -3492,13 +3436,11 @@ function resolveKartCollision(dt) {
     }
   }
 
-  // AI vs AI kart collision
   for (let i = 0; i < aiRacers.length; i++) {
     for (let j = i + 1; j < aiRacers.length; j++) {
       const a = aiRacers[i];
       const b = aiRacers[j];
 
-      // Broad-phase quick reject
       if (!broadPhaseKartHit(a.group.position, b.group.position)) continue;
 
       const key = pairKey(i, j);
@@ -3516,7 +3458,6 @@ function resolveKartCollision(dt) {
       b.group.position.x -= res.nx * overlap * 0.5;
       b.group.position.z -= res.nz * overlap * 0.5;
 
-      // If on cooldown, only do mild separation (stability) but skip harsh re-trigger effects
       if (pairCd > 0) continue;
 
       const impactSpeed = a.currentSpeed + b.currentSpeed;
@@ -3554,18 +3495,14 @@ function updatePhysics(dt) {
   }
   const playerBoosted = playerBoostTimer > 0;
 
-  //Handle spinout
   if (playerSpinning) {
     showSpinFeedback(0.15);
 
-    // Decelerate
     speed *= Math.max(0, 1 - 4 * dt);
 
-    // Apply spin
     yaw += playerSpinVel * dt;
     kart.rotation.y = yaw;
 
-    // Decay spin velocity
     const spinSign = Math.sign(playerSpinVel);
     playerSpinVel -= spinSign * SPIN_DECAY * dt;
     if (Math.abs(playerSpinVel) < SPIN_RECOVER_THRESHOLD) {
@@ -3574,7 +3511,6 @@ function updatePhysics(dt) {
       speed = 0;
     }
 
-    // Still spin wheels
     const wheelSpin = speed * dt * 1.5;
     for (const w of wheels) w.rotation.x += wheelSpin;
 
@@ -3596,7 +3532,6 @@ function updatePhysics(dt) {
     brake = 1;
   }
 
-  // A = left (+), D = right (-)
   let steerTarget = 0;
   if (keys.a) {
     steerTarget += 1;
@@ -3605,13 +3540,11 @@ function updatePhysics(dt) {
     steerTarget -= 1;
   }
 
-  // corresponding steering
   const steerDelta = steerTarget - steerInput;
   const maxStep = STEER_RATE * dt;
   steerInput += Math.max(-maxStep, Math.min(maxStep, steerDelta));
   steerInput = Math.max(-1, Math.min(1, steerInput));
 
-  // Speed
   if (throttle) speed += (ACCEL + (playerBoosted ? BOOST_ACCEL_BONUS : 0)) * dt;
   if (brake) speed -= BRAKE * dt;
 
@@ -3635,7 +3568,6 @@ function updatePhysics(dt) {
   const playerMaxForwardSpeed = MAX_SPEED * (playerBoosted ? BOOST_MAX_MULT : 1) * rampMaxMult;
   speed = Math.max(-MAX_SPEED * 0.35, Math.min(playerMaxForwardSpeed, speed));
 
-  // Turning
   const steer = steerInput * MAX_STEER;
   const speedFactor = Math.min(1, Math.abs(speed) / MAX_SPEED);
   let travelDirection = -1;
@@ -3645,16 +3577,13 @@ function updatePhysics(dt) {
   const yawRate = TURN_GAIN * steer * speedFactor * travelDirection;
   yaw += yawRate * dt;
 
-  // Integrate
   const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
   kart.position.addScaledVector(forward, speed * dt);
   kart.rotation.y = yaw;
 
-  // Wheel spin
   const wheelSpin = speed * dt * 1.5;
   for (const w of wheels) w.rotation.x += wheelSpin;
 
-  // Steering wheel animation (A=left => wheel left)
   steering.rotation.y = steerInput * 0.65;
 
   resolveTrackCollision();
@@ -3697,23 +3626,18 @@ function updateCustomizationPreview(dt) {
 }
 
 function updateCamera(dt) {
-  // Desired yaw is directly behind the kart (+PI from kart heading)
   const desiredYaw = yaw + Math.PI;
 
-  // Smoothly decay the manual drag offset back to zero
   if (!isDragging) {
     manualYawOffset *= Math.max(0, 1 - CAM_FOLLOW_SPEED * dt);
   }
 
-  // Lerp orbitYaw toward desiredYaw
   let diff = desiredYaw - orbitYaw;
-  // Normalise to (-PI, PI]
   diff = ((diff + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
   orbitYaw += diff * Math.min(1, CAM_FOLLOW_SPEED * dt);
 
   const finalYaw = orbitYaw + manualYawOffset;
 
-  // Smoothed camera target for nicer motion
   const rawTarget = new THREE.Vector3().copy(kart.position);
   rawTarget.y += 1.25;
 
@@ -3731,7 +3655,6 @@ function updateCamera(dt) {
   camera.position.set(cameraTargetSmoothed.x + x, cameraTargetSmoothed.y + y, cameraTargetSmoothed.z + z);
   camera.lookAt(cameraTargetSmoothed);
 
-  // Dynamic FOV: slight zoom-out at high speed / boost
   const speedFrac = clamp01(Math.abs(speed) / MAX_SPEED);
   const boostFrac = playerBoostTimer > 0 ? 1 : 0;
   const targetFov = 60 + speedFrac * CAMERA_SPEED_FOV_BONUS + boostFrac * CAMERA_BOOST_FOV_BONUS;
@@ -3763,7 +3686,6 @@ function animate() {
   updateRaceHud(dt);
   updateFeedbackUI(dt);
 
-  // Keep shadow light centred on the kart so the tight frustum always covers it
   if (!customizationActive) {
     dir.position.set(kart.position.x + 30, 40, kart.position.z + 20);
     dir.target.position.copy(kart.position);
@@ -3775,7 +3697,6 @@ function animate() {
 ensureFeedbackElements();
 animate();
 
-// Resize
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
